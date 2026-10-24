@@ -113,7 +113,8 @@ def test_validation_rules():
 
 def test_setup_file_round_trip(tmp_path):
     s = setup(kind="smps", eff=0.85, sense=True, ground=True, gsense=True)
-    s.links.append(DcLink("FB1", PinRef("U2", "+3V3", ["1"]), PinRef("U2", "+3V3", ["1"]), 0.05))
+    s.links.append(DcLink("D1", PinRef("U2", "+3V3", ["1"]),
+                          PinRef("U2", "+3V3", ["2"]), 0.05, diode_vf=0.32))
     from kipi.dc.pi.model import PinGroup
     s.loads[0].groups = [PinGroup(["1"], 0.4, "a")]
     s.settings.rho_by_layer = {"In1.Cu": 1.9e-5}
@@ -121,6 +122,9 @@ def test_setup_file_round_trip(tmp_path):
     path = s.save(tmp_path / "x.kipi-setup.json")
     assert path.name == "x.kipi-setup.yml"           # YAML only from 0.8.0 (#76)
     assert PISetup.load(path) == s
+    from kipi.core import yaml_io
+    saved = yaml_io.loads(path.read_text(encoding="utf-8"))
+    assert saved["format_version"] == 2
 
 
 def test_legacy_json_setups_still_load(tmp_path):
@@ -436,3 +440,4 @@ def test_ranges_in_volts_from_nominal():
     assert (back.vin_dv, back.acc_dv) == (True, True)
     del s.vrms[0]
     assert any("in volts from nominal needs a VRM" in e for e in validate(s))
+

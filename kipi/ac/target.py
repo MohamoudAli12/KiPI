@@ -20,8 +20,11 @@ The calculator's AC tolerance and load step can be copied from the DC load on th
 pins (:func:`probe_loads`): +/- the tighter side of its tolerance, from the voltage of the
 VRM feeding it, and its current. Two things that eat into that tolerance before any load
 step can be taken off it: the DC accuracy of the VRM driving the rail
-(:func:`vrm_accuracies`), the larger side of it, and the DC drop the copper itself causes
-at the load's pins (:func:`load_drop`), which needs a DC solve.
+(:func:`vrm_accuracies`), and the DC drop the copper itself causes at the load's pins
+(:func:`load_drop`), which needs a DC solve. Each comes off its own side of the tolerance
+(#172): a VRM that may sit 3 % low but only 1 % high uses up 3 % of the room below the
+target and 1 % of the room above it, and the AC tolerance is whichever room is left
+smaller. A drop uses up room below, a boost room above.
 
 An LDO's or switcher's input pins load the rail feeding it just as a DC load does
 (#117): each phase's input counts as a load whose tolerance is the regulator's input
@@ -133,15 +136,42 @@ def _hz(f: float) -> str:
 class LoadTolerance:
     name: str             # the DC load's name
     tolerance: str        # as set: "±5 %", "-3 / +5 %", "3.1 to 3.5 V"
-    nominal_v: float      # the set point of the VRM feeding it
+    nominal_v: float      # the target voltage of the VRM feeding it
     v_ac_v: float         # the tighter side of the tolerance, volts from nominal
+    # Volts from nominal down to the tolerance's lower end and up to its upper end (inf
+    # for no limit); None for both: v_ac_v either way.
+    below_v: Optional[float] = None
+    above_v: Optional[float] = None
 
     @classmethod
     def of(cls, load: "Load", nominal_v: float) -> Optional["LoadTolerance"]:
         """The AC tolerance a DC load's tolerance allows: +/- its tighter side. None if
         it has none, or nominal lies outside it."""
-        v_ac = _tighter_side(nominal_v, *load.limits(nominal_v))
-        return cls(load.name, load.tolerance_label(), nominal_v, v_ac) if v_ac else None
+        lo, hi = load.limits(nominal_v)
+        v_ac = _tighter_side(nominal_v, lo, hi)
+        return (cls(load.name, load.tolerance_label(), nominal_v, v_ac,
+                    *_room(nominal_v, lo, hi)) if v_ac else None)
+
+    @classmethod
+    def of_ac(cls, load: "Load", nominal_v: Optional[float]) -> Optional["LoadTolerance"]:
+        """A DC load's own AC tolerance (#174): how far ripple and transients may swing
+        it about its DC voltage, its min below and its max above. None if it has none, if
+        it is in % and ``nominal_v`` is unknown, or if either side leaves no room."""
+        if load.ac_tol_min is None and load.ac_tol_max is None:
+            return None
+        if load.ac_tol_pct:
+            if not nominal_v:
+                return None
+            scale = abs(nominal_v) / 100
+        else:
+            scale = 1.0                                 # ±V: volts already
+        below = math.inf if load.ac_tol_min is None else -load.ac_tol_min * scale
+        above = math.inf if load.ac_tol_max is None else load.ac_tol_max * scale
+        v_ac = min(below, above)
+        if not 0 < v_ac < math.inf:
+            return None
+        return cls(load.name, "AC " + load.ac_tolerance_label(), nominal_v or 0.0, v_ac,
+                   below, above)
 
     @classmethod
     def of_vrm_input(cls, name: str, vrm: "Vrm", nominal_v: float, lo: Optional[float],
@@ -151,7 +181,13 @@ class LoadTolerance:
         from kipi.dc.pi.model import tolerance_label
         v_ac = _tighter_side(nominal_v, lo, hi)
         label = tolerance_label(vrm.vin_min, vrm.vin_max, vrm.vin_pct, vrm.vin_dv)
-        return cls(name, label, nominal_v, v_ac) if v_ac else None
+        return cls(name, label, nominal_v, v_ac, *_room(nominal_v, lo, hi)) if v_ac else None
+
+    def room(self) -> Tuple[float, float]:
+        """Volts from nominal to the (lower, upper) end of the tolerance."""
+        if self.below_v is None or self.above_v is None:
+            return self.v_ac_v, self.v_ac_v
+        return self.below_v, self.above_v
 
     def label(self) -> str:
         if self.tolerance.endswith("%"):
@@ -168,23 +204,38 @@ def _tighter_side(nominal: float, lo: Optional[float], hi: Optional[float]
     return min(sides) if sides and min(sides) > 0 else None
 
 
+def _room(nominal: float, lo: Optional[float], hi: Optional[float]) -> Tuple[float, float]:
+    """Volts from ``nominal`` down to ``lo`` and up to ``hi``, inf for no limit."""
+    return (math.inf if lo is None else nominal - lo, math.inf if hi is None else hi - nominal)
+
+
 @dataclass
 class VrmAccuracy:
     name: str             # the VRM's name
     accuracy: str         # as set: "±1 %", "1.19 to 1.21 V"
-    v: float              # its larger side, volts from the set voltage
+    v: float              # its larger side, volts from the target voltage
+    # How far below and above the target voltage the output may sit, volts; None for
+    # both: v either way.
+    below_v: Optional[float] = None
+    above_v: Optional[float] = None
 
     def label(self) -> str:
         return f"{self.name}: {self.accuracy} (±{self.v * 1e3:.4g} mV)"
+
+    def sides(self) -> Tuple[float, float]:
+        """Volts (below, above) the target voltage the output may sit."""
+        if self.below_v is None or self.above_v is None:
+            return self.v, self.v
+        return self.below_v, self.above_v
 
 
 @dataclass
 class LoadDrop:
     name: str             # the DC load's name
-    nominal: float        # the set voltage of the VRM that drove it in the solve
+    nominal: float        # the target voltage of the VRM that drove it in the solve
     v_effective: float    # its solved effective voltage: supply pins minus ground pins
     v: float              # how far that sits from nominal, volts (never negative)
-    kind: str             # "drop" (below the set voltage) or "boost" (above it)
+    kind: str             # "drop" (below the target voltage) or "boost" (above it)
 
     def label(self) -> str:
         return (f"{self.name}: {self.v_effective:.4g} V of {self.nominal:g} V "
@@ -200,6 +251,7 @@ class ProbeLoad:
     drop: Optional[LoadDrop] = None     # its DC drop, once the power tree is solved
     vrm_input: bool = False             # an LDO's or switcher's input, not a DC load:
                                         # its current is known only from a DC solve
+    ac_tolerance: Optional[LoadTolerance] = None    # its own AC tolerance (#174), if set
 
     def label(self) -> str:
         return self.name
@@ -210,7 +262,7 @@ def _same_pins(a: Optional["PinRef"], b: Optional["PinRef"]) -> bool:
 
 
 def load_drop(dc_result, name: str) -> Optional[LoadDrop]:
-    """How far a DC load's solved effective voltage sits from the set voltage of the VRM
+    """How far a DC load's solved effective voltage sits from the target voltage of the VRM
     feeding it, out of the power-tree result ``dc_result``. None without a solve, or when
     that solve has no voltage for the load: it was not in the setup then, it has no copper
     path to its VRM (#88), or no VRM drives it."""
@@ -288,16 +340,15 @@ def probe_loads(setup: "PISetup", rail: Optional["PinRef"],
         if load.supply.ref != rail.ref or (ground and load.ground
                                            and load.ground.ref != ground.ref):
             continue
-        tol = None
-        if load.has_tolerance():
-            group = net_groups(setup, [load.supply.net])[load.supply.net]
-            vrm = next((v for v in setup.vrms if v.voltage
-                        and any(ph.output.net in group for ph in v.all_phases())), None)
-            tol = vrm and LoadTolerance.of(load, vrm.voltage)
+        group = net_groups(setup, [load.supply.net])[load.supply.net]
+        vrm = next((v for v in setup.vrms if v.voltage
+                    and any(ph.output.net in group for ph in v.all_phases())), None)
+        tol = vrm and load.has_tolerance() and LoadTolerance.of(load, vrm.voltage)
         exact = _same_pins(load.supply, rail) and (load.ground is None
                                                    or _same_pins(load.ground, ground))
         out.append(ProbeLoad(load.name, tol or None, abs(load.total_current()), exact,
-                             load_drop(dc_result, load.name)))
+                             load_drop(dc_result, load.name),
+                             ac_tolerance=LoadTolerance.of_ac(load, vrm and vrm.voltage)))
     for name, v, k in vrm_inputs(setup):
         ph = v.all_phases()[k]
         if ph.input.ref != rail.ref or (ground and ph.ground and ph.ground.ref != ground.ref):
@@ -324,5 +375,5 @@ def vrm_accuracies(setup: "PISetup", rail: Optional["PinRef"] = None) -> List[Vr
         if acc is None or (rail and not any(rail.net in groups[ph.output.net]
                                             for ph in v.all_phases())):
             continue
-        out.append(VrmAccuracy(v.name, v.accuracy_label(), acc))
+        out.append(VrmAccuracy(v.name, v.accuracy_label(), acc, *v.accuracy_sides()))
     return out

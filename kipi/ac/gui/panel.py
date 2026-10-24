@@ -22,11 +22,14 @@ from qtpy.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSlider, QSpinBox,
     QTableWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget,
+    QInputDialog,
 )
 
 from kipi.ac.checks import capacitor_candidates, default_ground, validate_ac
 from kipi.ac.gui.caps import describe_cap, models_from_values, new_cap
+from kipi.ac.gui.packages import PackageEditor, describe as describe_package, new_package
 from kipi.ac.model import AGING_PCT_PER_DECADE, CapModel, Probe
+from kipi.ac.package import open_removed_dies, sync_die_probes
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import classify_nets, sorted_nets
 from kipi.dc.gui.pi_panel import (
@@ -36,6 +39,7 @@ from kipi.dc.gui.pi_panel import (
 from kipi.dc.pi.autofill import guess_ground_pins, part_nets
 from kipi.dc.pi.load_model import apply_to_probe, new_items
 from kipi.ac.target import vrm_input_name, vrm_inputs
+from kipi.ac.transient import transients
 from kipi.dc.pi.model import Load, PinRef, PISetup, Vrm
 from kipi.gui.load_model_dialogs import (
     ApplyDialog, PartsDialog, candidate_parts, export_model, model_button, open_model,
@@ -44,6 +48,7 @@ from kipi.gui.report_option import ReportOption
 from kipi.gui.sortable import (
     SortItem, make_sortable, reset_sort, resort, set_row, sorted_rows,
 )
+from kipi.gui.spice_dialog import CAPACITOR, import_spice, part_values, spice_text
 from kipi.gui.tooltip_art import art_tip
 
 TITLE = "AC setup"
@@ -83,6 +88,17 @@ class CapEditor(_Editor):
         f.addRow("Capacitance", self.cap)
         f.addRow("ESL", self.esl)
         f.addRow("ESR", self.esr)
+        # The three from the part's SPICE model (#51).
+        self.btn_spice = QPushButton("Import SPICE model…", self)
+        self.btn_spice.clicked.connect(self._from_spice)
+        f.addRow("SPICE model", self.btn_spice)
+        self.chk_spice = QCheckBox("Use the SPICE model's impedance")
+        self.chk_spice.toggled.connect(self._spice_toggled)
+        f.addRow(self.chk_spice)
+        self.lbl_spice = QLabel()                   # which model, and whether it is used
+        self.lbl_spice.setWordWrap(True)
+        self.lbl_spice.setStyleSheet("color: #999;")
+        f.addRow(self.lbl_spice)
         self.rated = _spin(0, 1e4, 0, 3, " V", 1)
         self.rated.setSpecialValueText("not set")
         self.kept = _spin(1, 100, 40, 1, " %", 5)
@@ -105,7 +121,8 @@ class CapEditor(_Editor):
         # Drawings under the tooltips (#116): the series model and its impedance curve with
         # the field's element picked out, the DC bias curve and aging.
         art = {self.cap: ("cap_model", "c"), self.esl: ("cap_model", "l"),
-               self.esr: ("cap_model", "r"), self.rated: ("dc_bias", "rated"),
+               self.esr: ("cap_model", "r"), self.btn_spice: ("cap_model", "c", "l", "r"),
+               self.rated: ("dc_bias", "rated"),
                self.kept: ("dc_bias", "kept"), self.aging: ("aging", "aging"),
                self.dielectric: ("dielectric", "x7r")}
         for w, text in (
@@ -140,7 +157,19 @@ class CapEditor(_Editor):
                                 "a PDN: a ±10 % part keeps 90 % of its capacitance."),
                 (self.esl, "Equivalent series inductance of the part itself (from its "
                            "datasheet); the board's mounting inductance is simulated"),
-                (self.esr, "Equivalent series resistance of one part, from its datasheet")):
+                (self.esr, "Equivalent series resistance of one part, from its datasheet"),
+                (self.btn_spice,
+                 "Use the part's SPICE model, a .SUBCKT of resistors, inductors and "
+                 "capacitors from its maker (often a ladder of them, following the part's "
+                 "impedance closely). It is saved with the setup, and the AC and Coupled "
+                 "Noise solves take each part's impedance from it at every frequency. The "
+                 "capacitance, ESL and ESR are fitted to it, for the tables and reports. Its "
+                 "capacitance is at no DC bias: enter the voltage rating to derate it, which "
+                 "scales every capacitor in the model alike."),
+                (self.chk_spice,
+                 "Take the impedance from the imported SPICE model. Untick to use the "
+                 "capacitance, ESL and ESR as you enter them; the model is kept, and "
+                 "ticking again puts its fitted values back.")):
             tip(f, w, text, art.get(w))
         self._watch(self.name, self.cap, self.esl, self.esr, self.rated, self.kept,
                     self.mfg_tol)
@@ -205,7 +234,49 @@ class CapEditor(_Editor):
         self._store()
 
     # ------------------------------------------------------------ values
+    def _from_spice(self):
+        m = self.obj
+        if m is None:
+            return
+        snap = self.panel.snapshot
+        got = import_spice(self, CAPACITOR, [m.name, *part_values(snap, m.refs)])
+        if got is None:
+            return
+        m.spice = got[0]
+        if re.fullmatch(r"Model\d+", m.name):        # still the name it was made with
+            m.name = _unique(m.spice.subckt, [x.name for x in self.panel.setup.caps
+                                              if x is not m])
+        self._fitted(m)
+
+    def _spice_toggled(self, on: bool):
+        m = self.obj
+        if self._loading or m is None or m.spice is None:
+            return
+        m.spice.use = on
+        if on:
+            self._fitted(m)
+        else:
+            self._spice_fields(m)
+            self.changed.emit()
+
+    def _fitted(self, m: CapModel):
+        """Put the values fitted to ``m``'s SPICE model in it and in the fields."""
+        for k, v in m.spice.values.items():
+            setattr(m, k, v)
+        self.load(m)
+        self.changed.emit()
+
+    def _spice_fields(self, m: CapModel):
+        """The SPICE model's line, and the RLC fields locked while it is in use."""
+        self.chk_spice.setVisible(m.spice is not None)
+        self.lbl_spice.setVisible(m.spice is not None)
+        self.chk_spice.setChecked(m.uses_spice)
+        self.lbl_spice.setText(spice_text(m.spice) if m.spice else "")
+        for w in (self.cap, self.esl, self.esr):
+            w.setEnabled(not m.uses_spice)
+
     def _load(self, m: CapModel):
+        self._spice_fields(m)
         self.name.setText(m.name)
         self.cap.setValue(m.capacitance_f * 1e6)
         self.esl.setValue(m.esl_h * 1e9)
@@ -375,6 +446,11 @@ class ProbeEditor(_Editor):
         self.btn_calc.setToolTip("Work out a target impedance and frequency from the "
                                  "device's supply tolerance and transient current")
         self.btn_calc.clicked.connect(self._calculator)
+        # The load step behind the estimated transient response (#166).
+        self.step = _spin(0, 1e4, 0, 3, " A", 0.5)
+        self.step.setSpecialValueText("none")
+        self.slew = _spin(0, 1e6, 0, 3, " A/µs", 1)
+        self.slew.setSpecialValueText("none")
         self.target_kind = QComboBox()
         self.target_kind.addItem("Flat, up to a frequency", "flat")
         self.target_kind.addItem("Custom (piecewise linear)", "custom")
@@ -399,7 +475,15 @@ class ProbeEditor(_Editor):
                                  "last point's |Z| above it.")
         self.lbl_points.setWordWrap(True)
         self.lbl_points.setStyleSheet("color: #999;")
+        # A die port of a package model (#53): no pins of its own to pick.
+        self.lbl_die = QLabel()
+        self.lbl_die.setWordWrap(True)
+        self.lbl_die.setToolTip(art_tip("A die port of a package model: the impedance is "
+                                        "looked into at the die, through the package from "
+                                        "the board. Its connections are set in the Packages "
+                                        "tab.", "package_ports", "die"))
         f.addRow("Name", self.name)
+        f.addRow("Die port", self.lbl_die)
         f.addRow("Supply pins", self.rail)
         f.addRow("Ground pins", self.ground)
         f.addRow("Target", self.target_kind)
@@ -409,6 +493,8 @@ class ProbeEditor(_Editor):
         f.addRow(self.points)
         f.addRow(self.btn_point)
         f.addRow(self.lbl_points)
+        f.addRow("Load step (ΔI)", self.step)
+        f.addRow("Load step slew rate", self.slew)
         hint = QLabel("The PDN impedance solution is the impedance from the probe point "
                       "looking out into the power distribution network through all loop "
                       "paths (power planes, vias, capacitors, series links).")
@@ -418,24 +504,33 @@ class ProbeEditor(_Editor):
         self._legend()
         self._mark({self.name: REQUIRED, self.rail: REQUIRED, self.ground: REQUIRED,
                     self.target_kind: OPTIONAL, self.target: OPTIONAL,
-                    self.target_f: OPTIONAL})
+                    self.target_f: OPTIONAL, self.step: OPTIONAL, self.slew: OPTIONAL})
         # Drawings under the tooltips (#116): the flat and custom targets on the |Z| plot.
         art = {self.target_kind: ("target_types", "flat", "custom"),
-               self.target: ("target_types", "flat"), self.target_f: ("target_types", "tf")}
+               self.target: ("target_types", "flat"), self.target_f: ("target_types", "tf"),
+               self.step: ("load_step", "step"), self.slew: ("load_step", "slew")}
         for w, text in (
                 (self.name, "A name for this probe, shown in the plot legend and the table"),
                 (self.rail, "The device's supply pins: where the impedance is looked into"),
-                (self.ground, "The device's ground pins, on the ground net being simulated. "
-                              "Picking the supply pins fills in the same part's ground pins."),
+                (self.ground, "The device's ground pins, on the ground net being simulated "
+                              "or on a ground a series link ties to it (an analog ground "
+                              "behind a net tie or a ferrite). Picking the supply pins fills "
+                              "in the same part's ground pins."),
                 (self.target_kind, "Flat: one impedance up to a frequency. Custom: a target "
                                    "mask through frequency/impedance points."),
                 (self.target, "Target impedance: PASS if |Z| stays at or below this from "
                               "the VRM's control loop bandwidth (if set) up to the target "
                               "frequency"),
                 (self.target_f, "Frequency up to which the target impedance applies "
-                                "(none: the whole sweep)")):
+                                "(none: the whole sweep)"),
+                (self.step, "How far the device's current steps. With a slew rate and the "
+                            "VRM's control loop bandwidth, the solve estimates the rail's "
+                            "dip when the load steps up and its rise when it steps back "
+                            "down (the Transient tab)."),
+                (self.slew, "How fast the device's current steps, up and back down")):
             tip(f, w, text, art.get(w))
-        self._watch(self.name, self.target, self.target_f, self.target_kind)
+        self._watch(self.name, self.target, self.target_f, self.target_kind, self.step,
+                    self.slew)
         self.target_kind.currentIndexChanged.connect(self._target_rows)
         self._target_rows()
 
@@ -497,21 +592,36 @@ class ProbeEditor(_Editor):
         dlg = TargetCalculator(self, self.name.text().strip(),
                                probe_loads(self.panel.setup, rail, ground,
                                            self.panel.dc_result),
-                               vrm_accuracies(self.panel.setup, rail))
+                               vrm_accuracies(self.panel.setup, rail),
+                               (self.step.value(), self.slew.value()))
         if dlg.exec() and dlg.target() is not None:
-            self.apply_target(dlg.target())
+            self.apply_target(dlg.target(), dlg.i_step.value(), dlg.slew.value())
 
-    def apply_target(self, t):
-        """Fill the target fields from a calculator result (which saves them)."""
+    def apply_target(self, t, step_a: Optional[float] = None,
+                     slew_a_per_us: Optional[float] = None):
+        """Fill the target fields, and the load step it came from, from a calculator
+        result (which saves them)."""
         self.target.setValue(t.z_ohm * 1e3)
         self.target_f.setValue(t.f_hz / 1e3)
+        if step_a and slew_a_per_us:
+            self.step.setValue(step_a)
+            self.slew.setValue(slew_a_per_us)
 
     def _load(self, p: Probe):
         self.name.setText(p.name)
         self.rail.set_value(p.rail)
         self.ground.set_value(p.ground)
+        for w in (self.rail, self.ground):
+            self.form.setRowVisible(w, not p.on_die)
+        self.form.setRowVisible(self.lbl_die, p.on_die)
+        if p.on_die:
+            self.lbl_die.setText(f"Port {p.die_port} of package {p.package}, on "
+                                 f"{p.rail.net} against {p.ground.net}. Connect its ports "
+                                 "in the Packages tab.")
         self.target.setValue((p.target_ohm or 0.0) * 1e3)
         self.target_f.setValue((p.target_hz or 0.0) / 1e3)
+        self.step.setValue(p.step_a or 0.0)
+        self.slew.setValue(p.slew_a_per_us or 0.0)
         self.points.setRowCount(0)
         reset_sort(self.points)
         for f_hz, z_ohm in sorted(p.target_points):
@@ -520,6 +630,10 @@ class ProbeEditor(_Editor):
         self._target_rows()
 
     def _save(self, p: Probe):
+        if p.on_die:                          # its pins follow its package's port
+            p.name = self.name.text().strip() or p.name
+            self._save_target(p)
+            return
         old = p.rail
         new_rail = self.rail.value() or p.rail
         typed = self.name.text().strip() or p.name
@@ -537,8 +651,13 @@ class ProbeEditor(_Editor):
             if gnd is not None and gnd != p.ground:
                 p.ground = gnd
                 self._show(self.ground, gnd)
+        self._save_target(p)
+
+    def _save_target(self, p: Probe):
         p.target_ohm = self.target.value() / 1e3 or None
         p.target_hz = self.target_f.value() * 1e3 or None
+        p.step_a = self.step.value() or None
+        p.slew_a_per_us = self.slew.value() or None
         p.target_custom = self.target_kind.currentData() == "custom"
         if p.target_custom and self.points.rowCount() == 0:
             # Switching to custom: start from the flat target's level.
@@ -555,6 +674,7 @@ class ACPanel(QWidget, PartSelection):
     result_selected = Signal(object)               # ACResult shown in the plot; None clears it
     setup_changed = Signal()                       # any edit to the setup
     results_saved = Signal(str)                    # path of a saved results file
+    report_requested = Signal(object, str)         # the shown ACResult, "html" or "pdf"
     # The VRM, series link, capacitor model or probe selected in the setup: kind ("vrm",
     # "link", "cap", "probe"), name, and whether the user picked it; ("", "", False) for
     # none (#96).
@@ -595,6 +715,18 @@ class ACPanel(QWidget, PartSelection):
         menu.aboutToShow.connect(lambda: self._fill_load_menu(menu))
         b_load.setMenu(menu)
         self.probe_list.buttons.insertWidget(1, b_load)
+        # Package models (#53): their die ports become probes.
+        b_pkg = QPushButton("From package model…")
+        b_pkg.setToolTip(art_tip("Read a package PI model (a Touchstone file) onto a part, "
+                                 "for probes on the die: its ports are connected in the "
+                                 "Packages tab", "package_ports", "die"))
+        b_pkg.clicked.connect(self.add_package)
+        self.probe_list.buttons.insertWidget(2, b_pkg)
+        self.package_list = ItemList(lambda: self.setup.packages, PackageEditor(self),
+                                     lambda: new_package(self), describe_package,
+                                     noun="package model")
+        self.package_list.changed.connect(self._packages_changed)
+        self.probe_list.changed.connect(self._probes_changed)
         # Load models (#17): a part's targets in a file, for many probes at once.
         self.probe_list.buttons.addWidget(model_button(
             self, "probe", self.apply_load_model, self.add_probes_from_model,
@@ -603,6 +735,7 @@ class ACPanel(QWidget, PartSelection):
         self.tabs.addTab(self.link_list, "Series links")
         self.tabs.addTab(self.cap_list, "Capacitors")
         self.tabs.addTab(self.probe_list, "Probes")
+        self.tabs.addTab(self.package_list, "Packages")
         self.tabs.addTab(self._sweep_tab(), "Sweep")
         self.tabs.addTab(self._mesh_tab(), "Mesh")
         for i, text in enumerate((
@@ -611,6 +744,7 @@ class ACPanel(QWidget, PartSelection):
                 "RLC models for the decoupling capacitors, and which parts use each",
                 "Where the impedance is looked into (usually a device's power pins), "
                 "with its target",
+                "Package PI models (Touchstone files) on board parts, for probes on the die",
                 "Frequency range and resolution of the sweep; capacitor DC bias, "
                 "temperature and aging",
                 "Mesh density and dielectric losses for the AC field solve")):
@@ -640,9 +774,10 @@ class ACPanel(QWidget, PartSelection):
                                   "this rail. Problems that stop the solve are listed above "
                                   "in red.")
         self.btn_solve.clicked.connect(self._solve)
-        self.report_option = ReportOption("impedance plot, board map and tables, after "
-                                          "each rail's solve", self._report_changed, self)
-        self.chk_report = self.report_option.chk
+        self.report_option = ReportOption(
+            "the shown rail's impedance plot, board map and tables",
+            lambda fmt: self.report_requested.emit(self.result, fmt), self._report_changed,
+            self)
         self.btn_report = QPushButton("Open report", self)
         self.btn_report.setToolTip("Open the shown rail's report in your browser or PDF "
                                    "viewer")
@@ -661,16 +796,20 @@ class ACPanel(QWidget, PartSelection):
 
         g_res = QGroupBox("Results", self)
         lr = QVBoxLayout(g_res)
-        self.tbl_probes = QTableWidget(0, 6, g_res)
+        self.tbl_probes = QTableWidget(0, 8, g_res)
         self.tbl_probes.setHorizontalHeaderLabels(
-            ["Probe", "Min |Z| (mΩ)", "Worst |Z| (mΩ)", "at (MHz)", "Target (mΩ)", ""])
+            ["Probe", "Min |Z| (mΩ)", "Worst |Z| (mΩ)", "at (MHz)", "Target (mΩ)",
+             "Undershoot (mV)", "Overshoot (mV)", ""])
         self.tbl_probes.verticalHeader().setVisible(False)
         self.tbl_probes.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_probes.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_probes.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.tbl_probes.setToolTip("Worst |Z|: where the impedance comes closest to (or "
                                    "furthest over) the probe's target; the highest impedance "
-                                   "in the sweep without one")
+                                   "in the sweep without one. Undershoot and overshoot: the "
+                                   "estimated dip when the probe's load steps up and rise "
+                                   "when it steps back down (the Transient tab), for probes "
+                                   "with a load step")
         make_sortable(self.tbl_probes)
         self.txt_notes = QLabel(g_res)
         self.txt_notes.setWordWrap(True)
@@ -682,6 +821,17 @@ class ACPanel(QWidget, PartSelection):
         self.btn_export.setToolTip("Write |Z|, R and X at every probe and sweep frequency to a "
                                    "CSV file")
         self.btn_export.clicked.connect(self._export_csv)
+        self.btn_export_model = QToolButton(g_res)
+        self.btn_export_model.setText("Export model ▾")
+        self.btn_export_model.setPopupMode(QToolButton.InstantPopup)
+        model_menu = QMenu(self.btn_export_model)
+        model_menu.addAction("Fitted poles (HyperLynx .pls)…",
+                             lambda: self._export_model("pls"))
+        model_menu.addAction("Touchstone impedance (.s1p)…",
+                             lambda: self._export_model("s1p"))
+        self.btn_export_model.setMenu(model_menu)
+        self.btn_export_model.setEnabled(False)
+        self.btn_export_model.setToolTip("Export the selected probe's one-port impedance model")
         self.btn_save = QPushButton("Save results…", g_res)
         self.btn_save.setEnabled(False)
         self.btn_save.setToolTip("Save every solved rail's results to reopen later with "
@@ -689,6 +839,7 @@ class ACPanel(QWidget, PartSelection):
         self.btn_save.clicked.connect(self._save_results)
         row.addStretch(1)
         row.addWidget(self.btn_save)
+        row.addWidget(self.btn_export_model)
         row.addWidget(self.btn_export)
         lr.addWidget(self.tbl_probes)
         lr.addWidget(self.txt_notes)
@@ -697,7 +848,8 @@ class ACPanel(QWidget, PartSelection):
         self.setEnabled(False)
 
     def _lists(self):
-        return (self.vrm_list, self.link_list, self.cap_list, self.probe_list)
+        return (self.vrm_list, self.link_list, self.cap_list, self.probe_list,
+                self.package_list)
 
     def _part_lists(self):
         return {"vrm": self.vrm_list, "link": self.link_list, "cap": self.cap_list,
@@ -730,18 +882,23 @@ class ACPanel(QWidget, PartSelection):
                               "sweep frequency (slowest, exact).")
         for wdg in (self.spin_fstart, self.spin_fstop, self.spin_ppd, self.spin_fpd):
             wdg.valueChanged.connect(self._ac_settings_changed)
-        self.chk_bias = QCheckBox("Capacitor DC bias")
+        # The capacitor deratings in one place (#180); the results and the report say which
+        # were applied.
+        self.g_derate = QGroupBox("Capacitor derating")
+        d = QFormLayout(self.g_derate)
+        f.addRow(self.g_derate)
+        self.chk_bias = QCheckBox("DC bias")
         self.chk_bias.setChecked(s.dc_bias)
-        f.addRow(self.chk_bias)
-        tip(f, self.chk_bias, "Derate the capacitor models that have a voltage rating "
+        d.addRow(self.chk_bias)
+        tip(d, self.chk_bias, "Derate the capacitor models that have a voltage rating "
                               "by the DC voltage across each part (from the last DC solve, "
-                              "or else the rail's VRM set point). Untick to solve with every "
+                              "or else the rail's VRM target voltage). Untick to solve with every "
                               "model's capacitance as entered.")
         self.chk_bias.toggled.connect(self._ac_settings_changed)
-        self.chk_mfg = QCheckBox("Capacitor manufacturing tolerance")
+        self.chk_mfg = QCheckBox("Manufacturing tolerance")
         self.chk_mfg.setChecked(s.mfg_tolerance)
-        f.addRow(self.chk_mfg)
-        tip(f, self.chk_mfg, "Solve the capacitor models that have a Manufacturing tolerance "
+        d.addRow(self.chk_mfg)
+        tip(d, self.chk_mfg, "Solve the capacitor models that have a Manufacturing tolerance "
                              "at the low end of it, the worst case for a PDN: a model with a "
                              "±10 % tolerance keeps 90 % of its capacitance. Models without "
                              "one are unchanged.")
@@ -752,20 +909,20 @@ class ACPanel(QWidget, PartSelection):
             self.cmb_temp.addItem(text, key)
         self.cmb_temp.setCurrentIndex(max(self.cmb_temp.findData(s.temperature), 0))
         self.spin_temp = _spin(-55, 200, s.temperature_c, 1, " °C", 5)
-        f.addRow("Temperature", self.cmb_temp)
-        f.addRow("Board temperature", self.spin_temp)
-        tip(f, self.cmb_temp, "The temperature of the copper (its resistivity) and of the "
+        d.addRow("Temperature", self.cmb_temp)
+        d.addRow("Board temperature", self.spin_temp)
+        tip(d, self.cmb_temp, "The temperature of the copper (its resistivity) and of the "
                               "capacitors with a dielectric (their capacitance). Fixed: one "
                               "temperature for the whole board. From DC thermal "
                               "co-simulation: the copper temperatures of the last DC solve "
                               "with thermal co-simulation, or of DC results opened from a "
                               "file. Not modeled: copper at 20 °C and capacitors at their "
                               "rated values.")
-        tip(f, self.spin_temp, "The board's temperature when Fixed, and where the thermal "
+        tip(d, self.spin_temp, "The board's temperature when Fixed, and where the thermal "
                                "co-simulation has none")
         self.cmb_temp.currentIndexChanged.connect(self._ac_settings_changed)
         self.spin_temp.valueChanged.connect(self._ac_settings_changed)
-        self.chk_aging = QCheckBox("Capacitor aging")
+        self.chk_aging = QCheckBox("Aging")
         self.chk_aging.setChecked(s.aging)
         self.spin_hours = _spin(1, 1e7, s.aging_hours, 0, " h", 1000)
         self.spin_hours.setEnabled(s.aging)
@@ -778,14 +935,14 @@ class ACPanel(QWidget, PartSelection):
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(self.sld_hours, 1)
         row.addWidget(self.lbl_years)
-        f.addRow(self.chk_aging)
-        f.addRow("Hours operated", self.spin_hours)
-        f.addRow(self.w_hours)
+        d.addRow(self.chk_aging)
+        d.addRow("Hours operated", self.spin_hours)
+        d.addRow(self.w_hours)
         self.sld_hours.setToolTip("Drag to set the hours operated, from 1000 hours (no aging "
                                   "yet) to 1,000,000 on a log scale")
-        tip(f, self.chk_aging, "Age the capacitor models that have a dielectric: each loses "
+        tip(d, self.chk_aging, "Age the capacitor models that have a dielectric: each loses "
                                "its aging rate per decade of hours operated past 1000 hours")
-        tip(f, self.spin_hours, "How long the capacitors have operated (8760 hours a year; "
+        tip(d, self.spin_hours, "How long the capacitors have operated (8760 hours a year; "
                                 "87600 is ten years). Heating a ceramic past its Curie point, "
                                 "as in reflow, restarts its aging.")
         self.chk_aging.toggled.connect(self._show_aging)
@@ -886,7 +1043,7 @@ class ACPanel(QWidget, PartSelection):
             wdg.blockSignals(True)
             wdg.setValue(v)
             wdg.blockSignals(False)
-        self.report_option.set_value(s.html_report, s.report_format)
+        self.report_option.set_value(s.report_format)
         for chk, on in ((self.chk_bias, s.dc_bias),
                         (self.chk_mfg, s.mfg_tolerance), (self.chk_aging, s.aging),
                         (self.chk_near, s.grade_near_rail_only)):
@@ -912,6 +1069,7 @@ class ACPanel(QWidget, PartSelection):
         self.snapshot = snap
         self.setup = setup
         self.dc_result = None
+        sync_die_probes(setup)
         self._load_ac_settings()
         self.clear_results()
         self.setEnabled(True)
@@ -1036,6 +1194,23 @@ class ACPanel(QWidget, PartSelection):
 
     def _new_cap(self):
         return new_cap(self.setup)
+
+    def add_package(self):
+        """Read a package model from a file onto a part, and show it in the Packages tab."""
+        k = new_package(self)
+        if k is not None:
+            self.tabs.setCurrentWidget(self.package_list)
+            self.package_list.add(k)
+
+    def _probes_changed(self):
+        """A die probe removed leaves its port open."""
+        if open_removed_dies(self.setup):
+            self.package_list.reload()
+
+    def _packages_changed(self):
+        """Give the packages' die ports their probes, and only those."""
+        if sync_die_probes(self.setup):
+            self.probe_list.reload()
 
     def _new_probe(self):
         vrm = self._vrm()
@@ -1163,7 +1338,8 @@ class ACPanel(QWidget, PartSelection):
     def _describe_link(k) -> str:
         r = "short" if k.resistance <= 0 else f"{k.resistance * 1e3:g} mΩ"
         esl = f", {k.esl_h * 1e9:g} nH" if k.esl_h else ""
-        return f"{k.name}: {k.side_a.net} ↔ {k.side_b.net} ({r}{esl})"
+        kind = f", diode DC {k.diode_vf:g} V A→B" if k.diode_vf else ""
+        return f"{k.name}: {k.side_a.net} ↔ {k.side_b.net} ({r}{esl}{kind})"
 
     @staticmethod
     def _describe_cap(m: CapModel) -> str:
@@ -1176,6 +1352,9 @@ class ACPanel(QWidget, PartSelection):
             target = f", custom target ({n} point{'s' if n != 1 else ''})"
         else:
             target = f", target {p.target_ohm * 1e3:g} mΩ" if p.target_ohm else ""
+        if p.on_die:
+            return (f"{p.name}: {p.rail.net} / {p.ground.net} (die port {p.die_port} of "
+                    f"{p.package}){target}")
         return f"{p.name}: {p.rail.net} / {p.ground.net} ({p.rail.label()}){target}"
 
     # ------------------------------------------------------------------ results
@@ -1191,7 +1370,9 @@ class ACPanel(QWidget, PartSelection):
         self.tbl_probes.setRowCount(0)
         self.txt_notes.clear()
         self.btn_export.setEnabled(False)
+        self.btn_export_model.setEnabled(False)
         self.btn_report.setVisible(False)
+        self.report_option.set_available(False)
 
     def show_error(self, message: str):
         self.txt_notes.setText(f'<span style="color:#ff7070"><b>Cannot solve:</b><br>'
@@ -1238,15 +1419,19 @@ class ACPanel(QWidget, PartSelection):
         t = self.tbl_probes
         reset_sort(t)
         t.setRowCount(len(result.probes))
+        trs = transients(result)
         for r, c in enumerate(result.probes):
             zmax, fmax = c.worst(result.freqs)
             ok = c.passed(result.freqs)
+            tr = trs.get(c.name)
+            swing = ([(f"{v * 1e3:.4g}", v) for v in (tr.undershoot_v, tr.overshoot_v)]
+                     if tr else ["", ""])
             set_row(t, r, [c.name, (f"{np.min(c.mag) * 1e3:.4g}", float(np.min(c.mag))),
                            (f"{zmax * 1e3:.4g}", zmax), (f"{fmax / 1e6:.4g}", fmax),
-                           _target_text(c),
+                           _target_text(c), *swing,
                            {None: "", True: "PASS", False: "FAIL"}[ok]])
             if ok is not None:
-                t.item(r, 5).setForeground(QColor("#60d060" if ok else "#ff6060"))
+                t.item(r, 7).setForeground(QColor("#60d060" if ok else "#ff6060"))
         st = result.stats
         notes = [f"<b>{html.escape(result.rail)}</b>: {html.escape(', '.join(result.rail_nets))} "
                  f"against {html.escape(result.ground)}; {len(result.caps)} capacitor(s), "
@@ -1256,6 +1441,10 @@ class ACPanel(QWidget, PartSelection):
                  f"({st.method}), {len(result.freqs)} sweep points in {result.solve_s:.1f} s"]
         if getattr(result, "bias_note", ""):
             notes.append(html.escape(result.bias_note))
+        if getattr(result, "deratings", None):
+            notes.append("Capacitor deratings: " + ", ".join(
+                f"{html.escape(what)} {'✔' if on else '✘'}"
+                for what, on, _how in result.deratings))
         if result.missing_caps:
             notes.append(f"⚠ {len(result.missing_caps)} capacitor(s) on this rail have no "
                          f"model and were left out: "
@@ -1264,11 +1453,20 @@ class ACPanel(QWidget, PartSelection):
         notes += [f"⚠ {html.escape(w)}" for w in result.warnings]
         self.txt_notes.setText("<br>".join(notes))
         self.btn_export.setEnabled(True)
+        self.btn_export_model.setEnabled(True)
         self.btn_report.setVisible(getattr(result, "report_path", None) is not None)
+        self.report_option.set_available(True)
         self.result_selected.emit(result)
 
-    def _report_changed(self, on: bool, fmt: str):
-        self.setup.ac.html_report, self.setup.ac.report_format = on, fmt
+    def set_report(self, result, path):
+        """A report just written of ``result``: the Open report button opens it while
+        ``result`` is shown."""
+        result.report_path = path
+        if result is self.result:
+            self.btn_report.setVisible(True)
+
+    def _report_changed(self, fmt: str):
+        self.setup.ac.report_format = fmt
 
     def _open_report(self):
         path = getattr(self.result, "report_path", None)
@@ -1308,3 +1506,31 @@ class ACPanel(QWidget, PartSelection):
                 write_csv(path, self.result)
             except OSError as e:
                 QMessageBox.warning(self, "KiPI", f"Export failed: {e}")
+
+    def _export_model(self, kind):
+        if self.result is None:
+            return
+        from kipi.ac.report import write_fitted_poles, write_touchstone
+        names = [c.name for c in self.result.probes]
+        if not names:
+            return
+        selected = self.tbl_probes.currentRow()
+        default_probe = (self.tbl_probes.item(selected, 0).text()
+                         if 0 <= selected < self.tbl_probes.rowCount() else names[0])
+        probe, ok = QInputDialog.getItem(self, "Export impedance model", "Probe", names,
+                                         names.index(default_probe) if default_probe in names else 0,
+                                         False)
+        if not ok:
+            return
+        suffix = ".pls" if kind == "pls" else ".s1p"
+        fmt = "Fitted poles (*.pls)" if kind == "pls" else "Touchstone (*.s1p)"
+        start = self.snapshot.project_dir if self.snapshot is not None else ""
+        stem = f"{self.result.rail}_{probe}_impedance{suffix}"
+        path, _ = QFileDialog.getSaveFileName(self, "Export impedance model",
+                                              f"{start}/{stem}" if start else stem, fmt)
+        if not path:
+            return
+        try:
+            (write_fitted_poles if kind == "pls" else write_touchstone)(path, self.result, probe)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "KiPI", f"Export failed: {e}")

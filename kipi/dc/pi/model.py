@@ -35,17 +35,19 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from kipi.ac.model import (
-    DEFAULT_KEPT_AT_RATED_PCT, ACSettings, CapModel, Probe, report_format,
+    DEFAULT_KEPT_AT_RATED_PCT, ACSettings, CapModel, PackageModel, Probe, report_format,
 )
-from kipi.dc.solver.setup import SolveSettings
+from kipi.core.model.spice import SpiceRef
+from kipi.dc.solver.setup import SHORT_OHMS, SolveSettings
 from kipi.dc.thermal.model import ThermalSettings
 from kipi.noise.model import (
     Aggressor, NoiseSettings, Victim, aggressor_from_dict, settings_from_dict as noise_settings,
     victim_from_dict,
 )
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 VRM_KINDS = ("source", "ldo", "smps")
+DEFAULT_BANDWIDTH_KHZ = 50.0
 
 
 @dataclass
@@ -100,7 +102,7 @@ class Vrm:
     # +0.5), instead of in volts (#131).
     vin_pct: bool = False
     vin_dv: bool = False
-    # DC accuracy of the set voltage (LDO / switcher), either end None: in % of it (e.g.
+    # DC accuracy of the target voltage (LDO / switcher), either end None: in % of it (e.g.
     # -1 / +1), with acc_dv in volts from it (e.g. -0.01 / +0.01), or with neither, the
     # output's lowest and highest volts. The target calculator takes its larger side off
     # the AC tolerance.
@@ -111,10 +113,10 @@ class Vrm:
     # Load line (#94): the regulated voltage droops by this many milliohms times the
     # output current actually drawn (0 = none).
     load_line_mohm: float = 0.0
-    # AC only: control loop bandwidth, kHz (None = not given).
-    bandwidth_khz: Optional[float] = None
+    # AC only: control loop bandwidth, kHz (None = not given); 50 kHz for a new VRM (#190).
+    bandwidth_khz: Optional[float] = DEFAULT_BANDWIDTH_KHZ
     # Mesh remote sense (#93, DC only, off by default): every sense point's pins are held
-    # at the set voltage (less the load line, above that point's ground sense pins), the
+    # at the target voltage (less the load line, above that point's ground sense pins), the
     # VRM's current entering there; its output pins only measure. Point 1 is sense and
     # ground_sense above, points 2..N these.
     mesh_sense: bool = False
@@ -143,11 +145,20 @@ class Vrm:
         return tolerance_label(self.acc_min, self.acc_max, self.acc_pct, self.acc_dv)
 
     def accuracy_v(self) -> Optional[float]:
-        """The larger side of the DC accuracy, volts from the set voltage; None if not set."""
+        """The larger side of the DC accuracy, volts from the target voltage; None if not
+        set."""
         lo, hi = range_volts(self.voltage, self.acc_min, self.acc_max,
                              range_unit(self.acc_pct, self.acc_dv))
         sides = [abs(x - self.voltage) for x in (lo, hi) if x is not None]
         return max(sides) if sides else None
+
+    def accuracy_sides(self) -> Tuple[float, float]:
+        """How far (below, above) the target voltage the DC accuracy lets the output sit,
+        volts, 0 for an end not set or on the far side of the target."""
+        lo, hi = range_volts(self.voltage, self.acc_min, self.acc_max,
+                             range_unit(self.acc_pct, self.acc_dv))
+        return (0.0 if lo is None else max(0.0, self.voltage - lo),
+                0.0 if hi is None else max(0.0, hi - self.voltage))
 
 
 @dataclass
@@ -165,12 +176,23 @@ class Load:
     current: float
     ground: Optional[PinRef] = None
     # PASS if every pin is within this range, either end None for no limit: in % from
-    # nominal, the set point of the VRM driving the rail (e.g. -5 / +5), with tol_dv in
+    # nominal, the target voltage of the VRM driving the rail (e.g. -5 / +5), with tol_dv in
     # volts from nominal (e.g. -0.15 / +0.15, #131), or with neither, in volts.
     tol_min: Optional[float] = None
     tol_max: Optional[float] = None
     tol_pct: bool = True
     tol_dv: bool = False
+    # Optional DC and AC shares of that tolerance, for parts that give them apart (#174),
+    # saved in the same units: DC is the VRM's accuracy plus the copper's drop, AC the
+    # ripple and transient on top, in ±V or % from nominal. Nothing reads them yet.
+    dc_tol_min: Optional[float] = None
+    dc_tol_max: Optional[float] = None
+    dc_tol_pct: bool = True
+    dc_tol_dv: bool = False
+    ac_tol_min: Optional[float] = None
+    ac_tol_max: Optional[float] = None
+    ac_tol_pct: bool = True
+    ac_tol_dv: bool = False
     # Empty: ``current`` is split equally across the supply pins. Otherwise each group
     # of supply pins draws its own current and the load's total is their sum.
     groups: List[PinGroup] = field(default_factory=list)
@@ -190,6 +212,14 @@ class Load:
 
     def tolerance_label(self) -> str:
         return tolerance_label(self.tol_min, self.tol_max, self.tol_pct, self.tol_dv)
+
+    def dc_tolerance_label(self) -> str:
+        return tolerance_label(self.dc_tol_min, self.dc_tol_max, self.dc_tol_pct,
+                               self.dc_tol_dv)
+
+    def ac_tolerance_label(self) -> str:
+        return tolerance_label(self.ac_tol_min, self.ac_tol_max, self.ac_tol_pct,
+                               self.ac_tol_dv)
 
     def __setstate__(self, state):
         # Setups pickled in results files before asymmetric tolerances: +/- one %.
@@ -268,6 +298,24 @@ class DcLink:
     side_b: PinRef
     resistance: float                       # ohms; 0 = short (DC and AC)
     esl_h: Optional[float] = None           # series inductance, henries (AC only)
+    diode_vf: float = 0.0                   # DC forward drop, side A (anode) -> side B
+    # The part's SPICE model (#51): with it in use, AC takes the impedance from it, and
+    # the resistance and ESL are fitted to it.
+    spice: Optional[SpiceRef] = None
+
+    @property
+    def uses_spice(self) -> bool:
+        return self.spice is not None and self.spice.use
+
+    def impedance(self, omega):
+        """Small-signal impedance at angular frequency ``omega`` (an array)."""
+        if self.uses_spice:
+            return self.spice.impedance(omega)
+        return self.resistance + 1j * omega * (self.esl_h or 0.0) + 0 * omega
+
+    def is_short(self) -> bool:
+        """Whether the part is a short in AC as in DC (merged away)."""
+        return self.resistance <= SHORT_OHMS and not self.esl_h and not self.uses_spice
 
 
 DEFAULT_VIA_CURRENT_LIMIT_A = 1.0
@@ -283,7 +331,7 @@ class PISetup:
     # typical 0.3 mm via (#114).
     via_current_limit_a: Optional[float] = DEFAULT_VIA_CURRENT_LIMIT_A
     thermal: ThermalSettings = field(default_factory=ThermalSettings)   # off by default
-    html_report: bool = False                     # write a report after solving
+    html_report: bool = False                     # unused: reports on demand (#185)
     report_format: str = "html"                   # "html" or "pdf" (#119)
     # Nets ticked in the Board panel (the nets in scope). None = never chosen, so the
     # GUI guesses the main power and ground planes; [] = the user unticked them all.
@@ -299,6 +347,7 @@ class PISetup:
     # AC analysis
     caps: List[CapModel] = field(default_factory=list)
     probes: List[Probe] = field(default_factory=list)
+    packages: List[PackageModel] = field(default_factory=list)     # #53
     ac: ACSettings = field(default_factory=ACSettings)
     # Coupled Noise analysis (#69)
     aggressors: List[Aggressor] = field(default_factory=list)
@@ -315,13 +364,14 @@ class PISetup:
         return {r.net for r in refs}
 
     def part_refs(self) -> set:
-        """Footprints given a model: VRMs, loads, series links and capacitor models."""
+        """Footprints given a model: VRMs, loads, series links, capacitor and package models."""
         refs = [r for v in self.vrms for r in v.pin_refs()]
         refs += [r for ld in self.loads for r in (ld.supply, ld.ground) if r]
         refs += [r for k in self.links for r in (k.side_a, k.side_b) if r]
         refs += self._aggressor_pins()
         out = {r.ref for r in refs} | {ref for m in self.caps for ref in m.refs}
         out |= {ph.inductor for a in self.aggressors for ph in a.phases}
+        out |= {k.ref for k in self.packages}
         out.discard("")
         return out
 
@@ -361,7 +411,7 @@ class PISetup:
                       acc_min=v.get("acc_min"), acc_max=v.get("acc_max"),
                       acc_pct=v.get("acc_pct", True), acc_dv=v.get("acc_dv", False),
                       load_line_mohm=v.get("load_line_mohm", 0.0),
-                      bandwidth_khz=v.get("bandwidth_khz"),
+                      bandwidth_khz=v.get("bandwidth_khz", DEFAULT_BANDWIDTH_KHZ),
                       mesh_sense=v.get("mesh_sense", False),
                       sense_points=[SensePoint(pin(sp.get("sense")),
                                                pin(sp.get("ground_sense")))
@@ -373,7 +423,9 @@ class PISetup:
                                 for g in l.get("groups", [])])
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
-                          resistance=k["resistance"], esl_h=k.get("esl_h"))
+                          resistance=k["resistance"], esl_h=k.get("esl_h"),
+                          diode_vf=k.get("diode_vf", 0.0),
+                          spice=SpiceRef.from_dict(k.get("spice")))
                    for k in d.get("links", [])],
             via_current_limit_a=d.get("via_current_limit_a", DEFAULT_VIA_CURRENT_LIMIT_A),
             thermal=ThermalSettings(**{k: v for k, v in d.get("thermal", {}).items()
@@ -390,12 +442,15 @@ class PISetup:
                            c.get("rated_v"),
                            c.get("kept_at_rated_pct", DEFAULT_KEPT_AT_RATED_PCT),
                            c.get("dielectric", ""), c.get("aging_pct_per_decade", 0.0),
-                           c.get("mfg_tolerance_pct"))
+                           c.get("mfg_tolerance_pct"), SpiceRef.from_dict(c.get("spice")))
                   for c in d.get("caps", [])],
             probes=[Probe(p["name"], pin(p["rail"]), pin(p["ground"]), p.get("target_ohm"),
                           p.get("target_hz"), bool(p.get("target_custom", False)),
-                          [(float(f), float(z)) for f, z in p.get("target_points", [])])
+                          [(float(f), float(z)) for f, z in p.get("target_points", [])],
+                          p.get("step_a"), p.get("slew_a_per_us"),
+                          str(p.get("package", "")), int(p.get("die_port", 0)))
                     for p in d.get("probes", [])],
+            packages=[PackageModel.from_dict(k) for k in d.get("packages", [])],
             ac=ACSettings(**{k: v for k, v in d.get("ac", {}).items()
                              if k in {f.name for f in dataclasses.fields(ACSettings)}}),
             aggressors=[aggressor_from_dict(a, pin, d.get("noise"))
@@ -476,11 +531,18 @@ def find_setup(board_file_or_name: str, project_dir: str) -> Optional[Path]:
 
 def _load_tolerance(d: dict) -> dict:
     """A load's tolerance fields from a setup file; older files have +/- one %."""
+    out = {}
+    for p in ("dc_", "ac_"):                        # the DC and AC shares (#174)
+        if p + "tol_min" in d or p + "tol_max" in d:
+            out.update({p + "tol_min": d.get(p + "tol_min"),
+                        p + "tol_max": d.get(p + "tol_max"),
+                        p + "tol_pct": d.get(p + "tol_pct", True),
+                        p + "tol_dv": d.get(p + "tol_dv", False)})
     if "tol_min" in d or "tol_max" in d:
-        return {"tol_min": d.get("tol_min"), "tol_max": d.get("tol_max"),
+        return {**out, "tol_min": d.get("tol_min"), "tol_max": d.get("tol_max"),
                 "tol_pct": d.get("tol_pct", True), "tol_dv": d.get("tol_dv", False)}
     t = d.get("tolerance_pct")
-    return {} if t is None else {"tol_min": -t, "tol_max": t}
+    return out if t is None else {**out, "tol_min": -t, "tol_max": t}
 
 
 def net_groups(setup: PISetup, extra_nets=()) -> Dict[str, frozenset]:
@@ -515,8 +577,8 @@ def net_groups(setup: PISetup, extra_nets=()) -> Dict[str, frozenset]:
 
 def rail_nominal(setup: PISetup, net: Optional[str], skip: str = "",
                  groups=None) -> Optional[float]:
-    """The nominal voltage of the rail ``net`` is on: the set voltage of a VRM (other than
-    ``skip``) driving it. None if no VRM does."""
+    """The nominal voltage of the rail ``net`` is on: the target voltage of a VRM (other
+    than ``skip``) driving it. None if no VRM does."""
     if not net:
         return None
     groups = groups or net_groups(setup, [net])
@@ -642,8 +704,11 @@ def validate(setup: PISetup) -> List[str]:
 
     rail_groups = set(by_group)
     for l in setup.loads:
-        if l.tol_min is not None and l.tol_max is not None and l.tol_min > l.tol_max:
-            errors.append(f"Load {l.name}: tolerance minimum is above its maximum")
+        for what, lo, hi in (("tolerance", l.tol_min, l.tol_max),
+                             ("DC tolerance", l.dc_tol_min, l.dc_tol_max),
+                             ("AC tolerance", l.ac_tol_min, l.ac_tol_max)):
+            if lo is not None and hi is not None and lo > hi:
+                errors.append(f"Load {l.name}: {what} minimum is above its maximum")
         if l.groups:
             seen_pins: Dict[str, int] = {}
             for gi, g in enumerate(l.groups):
@@ -669,6 +734,10 @@ def validate(setup: PISetup) -> List[str]:
     for k in setup.links:
         if k.resistance < 0:
             errors.append(f"DC connection {k.name}: resistance cannot be negative")
+        if k.diode_vf < 0:
+            errors.append(f"Diode {k.name}: forward voltage cannot be negative")
+        if k.diode_vf and k.resistance == 0:
+            errors.append(f"Diode {k.name}: enter a nonzero series resistance")
     for g in ground_groups:
         if g in rail_groups:
             errors.append(f"{group_name(g)} is used both as a supply and as ground")

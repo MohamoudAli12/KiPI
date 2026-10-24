@@ -92,6 +92,15 @@ def test_calculator_fills_the_probe_target(app, monkeypatch):
     ed.btn_calc.click()
     assert probe.target_ohm == pytest.approx(2e-3)
     assert probe.target_hz == pytest.approx(1 / (math.pi * 0.3e-6), rel=1e-4)
+    assert (probe.step_a, probe.slew_a_per_us) == (15, 50)    # its load step too (#166)
+    assert (ed.step.value(), ed.slew.value()) == (15, 50)
+    # Opened again, the calculator starts from the probe's own load step.
+    monkeypatch.setattr(target_calc.TargetCalculator, "last", (0.0, 1.0, 2.0))
+    seen = []
+    monkeypatch.setattr(target_calc.TargetCalculator, "exec",
+                        lambda dlg: seen.append((dlg.i_step.value(), dlg.slew.value())) or 0)
+    ed.btn_calc.click()
+    assert seen == [(15, 50)]
 
 
 # --- Copy tolerance and current from the probe's DC load (#87) -----------------------------
@@ -218,6 +227,50 @@ def test_dialog_subtracts_a_vrm_accuracy(app, monkeypatch):
     assert d.v_ac.value() == 0                                 # never below zero
 
 
+def test_each_side_of_the_accuracy_comes_off_its_own_side_of_the_tolerance(app, monkeypatch):
+    # #172: a load allowed -5 / +3 % of 1 V behind a VRM that may sit -3 / +1 % off it has
+    # 50 - 30 = 20 mV left below and 30 - 10 = 20 mV above, not 30 - 30 = 0 mV.
+    from kipi.ac.gui.target_calc import TargetCalculator
+    from kipi.ac.target import LoadDrop, ProbeLoad, probe_loads, vrm_accuracies
+    from kipi.dc.pi.model import PinRef
+    monkeypatch.setattr(TargetCalculator, "last", (0.0, 0.0, 0.0))
+    s = _setup()
+    soc, vr1 = s.loads[1], s.vrms[0]
+    soc.tol_min, soc.tol_max = -5.0, 3.0
+    vr1.kind, vr1.acc_min, vr1.acc_max = "ldo", -3.0, 1.0
+    rail = PinRef("U1", "+1V0")
+    load, acc = probe_loads(s, rail)[0], vrm_accuracies(s, rail)[0]
+    assert load.tolerance.room() == (pytest.approx(0.05), pytest.approx(0.03))
+    assert acc.sides() == (pytest.approx(0.03), pytest.approx(0.01))
+    d = TargetCalculator(loads=[load], accuracies=[acc])
+    d.btn_copy.click()
+    assert d.v_ac.value() == pytest.approx(30)
+    d.btn_accuracy.click()
+    assert d.v_ac.value() == pytest.approx(20)
+    # A drop uses up room below (20 -> 15 mV), a boost room above (20 -> 16 mV)
+    d.subtract_drop(ProbeLoad("SoC", None, 2.0, drop=LoadDrop("SoC", 1.0, 0.995, 0.005,
+                                                              "drop")))
+    assert d.v_ac.value() == pytest.approx(15)
+    d.btn_copy.click()
+    d.btn_accuracy.click()
+    d.subtract_drop(ProbeLoad("SoC", None, 2.0, drop=LoadDrop("SoC", 1.0, 1.004, 0.004,
+                                                              "boost")))
+    assert d.v_ac.value() == pytest.approx(16)
+    # Typed in: the room is unknown, so the larger side comes off the value
+    d.v_ac.setValue(40)
+    d.btn_accuracy.click()
+    assert d.v_ac.value() == pytest.approx(10)                # 40 - 30 mV
+
+
+def test_an_accuracy_with_one_end_uses_up_one_side():
+    from kipi.dc.pi.model import PinRef, Vrm
+    v = Vrm("VR1", PinRef("U9", "+1V0"), 1.0, kind="smps")
+    v.acc_min, v.acc_max = -2.0, None
+    assert v.accuracy_sides() == (pytest.approx(0.02), 0.0)
+    v.acc_min, v.acc_max, v.acc_pct = 0.99, 1.03, False       # volts
+    assert v.accuracy_sides() == (pytest.approx(0.01), pytest.approx(0.03))
+
+
 # --- Subtract the solved DC drop at the load's pins ----------------------------------------
 
 def _tree(*loads):
@@ -268,11 +321,11 @@ def test_dialog_subtracts_the_dc_drop(app, monkeypatch):
     for _ in range(4):
         d.btn_drop.click()
     assert d.v_ac.value() == 0                                   # never below zero
-    # Solved, but sitting exactly at the set voltage: nothing to take off
+    # Solved, but sitting exactly at the target voltage: nothing to take off
     flat = TargetCalculator(loads=[ProbeLoad("SoC", None, 2.0,
                                              drop=LoadDrop("SoC", 1.0, 1.0, 0.0, "drop"))])
     assert not flat.btn_drop.isEnabled()
-    assert "sits at its VRM's set voltage" in flat.btn_drop.toolTip()
+    assert "sits at its VRM's target voltage" in flat.btn_drop.toolTip()
 
 
 def test_the_calculator_gets_the_panels_dc_result(app, monkeypatch):
@@ -433,3 +486,45 @@ def test_dialog_asks_for_a_dc_solve_for_a_regulators_current(app, monkeypatch):
     assert "in the last DC solve, 0.501 A" in d.btn_current.toolTip()
     d.btn_current.click()
     assert d.i_step.value() == pytest.approx(0.501)
+
+
+def test_a_loads_own_ac_tolerance_is_offered_apart():
+    """#174: the load's AC tolerance, its min below and its max above the DC voltage."""
+    from kipi.ac.target import probe_loads
+    from kipi.dc.pi.model import PinRef
+    s = _setup()
+    soc = s.loads[1]
+    assert probe_loads(s, PinRef("U1", "+1V0"))[0].ac_tolerance is None
+    soc.ac_tol_min, soc.ac_tol_max = -1.5, 2.0                 # % of VR1's 1 V
+    t = probe_loads(s, PinRef("U1", "+1V0"))[0].ac_tolerance
+    assert t.v_ac_v == pytest.approx(0.015) and t.room() == pytest.approx((0.015, 0.02))
+    assert t.label() == "SoC: AC -1.5 / +2 % of 1 V"
+    soc.ac_tol_min, soc.ac_tol_max, soc.ac_tol_pct, soc.ac_tol_dv = None, 0.03, False, True
+    t = probe_loads(s, PinRef("U1", "+1V0"))[0].ac_tolerance
+    assert t.v_ac_v == pytest.approx(0.03) and t.label() == "SoC: AC max +0.03 V (±30 mV)"
+    soc.ac_tol_max = -0.01                                    # no room: nothing
+    assert probe_loads(s, PinRef("U1", "+1V0"))[0].ac_tolerance is None
+    s.vrms.clear()                    # ±V needs no VRM; % does
+    soc.ac_tol_max = 0.02
+    assert probe_loads(s, PinRef("U1", "+1V0"))[0].ac_tolerance.v_ac_v == pytest.approx(0.02)
+    soc.ac_tol_pct, soc.ac_tol_dv = True, False
+    assert probe_loads(s, PinRef("U1", "+1V0"))[0].ac_tolerance is None
+
+
+def test_dialog_copies_the_ac_tolerance_only_when_there_is_one(app, monkeypatch):
+    from kipi.ac.gui.target_calc import TargetCalculator
+    from kipi.ac.target import LoadTolerance, ProbeLoad
+    monkeypatch.setattr(TargetCalculator, "last", (0.0, 0.0, 0.0))
+    assert not TargetCalculator().btn_copy_ac.isEnabled()      # greyed out by default
+    total = LoadTolerance("A", "±5 %", 1.0, 0.05)
+    ac = LoadTolerance("A", "AC -2 / +3 %", 1.0, 0.02, 0.02, 0.03)
+    a = ProbeLoad("A", total, 1.0, ac_tolerance=ac)
+    b = ProbeLoad("B", total, 1.0)
+    d = TargetCalculator(loads=[b, a])
+    assert not d.btn_copy_ac.isEnabled() and "B has no AC tolerance" in d.btn_copy_ac.toolTip()
+    d.load.setCurrentIndex(1)
+    assert d.btn_copy_ac.isEnabled() and "<img" in d.btn_copy_ac.toolTip()
+    d.btn_copy_ac.click()
+    assert d.v_ac.value() == pytest.approx(20)                 # its tighter side
+    d.btn_copy.click()
+    assert d.v_ac.value() == pytest.approx(50)                 # the total, as before

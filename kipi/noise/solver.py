@@ -69,6 +69,11 @@ def _ripple_probes(setup, agg, result, progress):
             msg = f"No AC probe named {name}: no ripple shown there"
             result.warnings.append(msg)
             progress.warn(msg)
+        elif by_name[name].on_die:
+            msg = (f"AC probe {name} is on a package's die; its ripple is shown at "
+                   "the package part's pins, without the package")
+            result.warnings.append(msg)
+            progress.warn(msg)
     return [by_name[n] for n in agg.ripple_probes if n in by_name]
 
 
@@ -154,7 +159,8 @@ def solve_noise(snap: BoardSnapshot, setup: PISetup, aggressor: str,
                                       setup.noise.f_max_hz, setup.noise.max_harmonics)
     parts = [PhaseParts(ph.inductance_h, r.f_ring_hz, r.zeta, r.c_sw_f,
                         agg.soft_edge_zeta, r.qrr_c,
-                        setup.noise.dead_time_ns * 1e-9)
+                        setup.noise.dead_time_ns * 1e-9,
+                        ph.rds_on_hs_ohm or 0.0, ph.rds_on_ls_ohm or 0.0)
              for ph, r in zip(agg.phases, reports)]
     wf = synthesize(op.topology, op.vin, op.vout, op.iout, op.iin, op.duty, agg.fsw_hz,
                     agg.rise_s, agg.fall_s, parts, k,

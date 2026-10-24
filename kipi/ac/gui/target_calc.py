@@ -15,6 +15,7 @@ from kipi.ac.target import (
     ProbeLoad, Target, VrmAccuracy, target_from_transient,
 )
 from kipi.dc.gui.pi_panel import _spin
+from kipi.gui.tooltip_art import art_tip
 
 NOTE = ("Z<sub>target</sub> = V<sub>AC</sub> / I<sub>step</sub>, flat up to "
         "f<sub>target</sub> = 1 / (π · t<sub>rise</sub>), where t<sub>rise</sub> = "
@@ -29,7 +30,8 @@ class TargetCalculator(QDialog):
 
     def __init__(self, parent: Optional[QWidget] = None, probe_name: str = "",
                  loads: Optional[List[ProbeLoad]] = None,
-                 accuracies: Optional[List[VrmAccuracy]] = None):
+                 accuracies: Optional[List[VrmAccuracy]] = None,
+                 step: Tuple[float, float] = (0.0, 0.0)):
         super().__init__(parent)
         self.setWindowTitle("Target Impedance/Frequency Calculator"
                             + (f": {probe_name}" if probe_name else ""))
@@ -37,14 +39,23 @@ class TargetCalculator(QDialog):
         self.v_ac.setToolTip("How far the supply may move from its DC value during a load "
                              "transient (the AC part of the device's supply tolerance)")
         self.i_step = _spin(0, 1e4, 0, 3, " A", 0.5)
-        self.i_step.setToolTip("Size of the device's load current step")
+        self.i_step.setToolTip(art_tip("Size of the device's load current step", "load_step",
+                                       "step"))
         self.slew = _spin(0, 1e6, 0, 3, " A/µs", 1)
-        self.slew.setToolTip("How fast the load current steps")
-        for s, v in zip((self.v_ac, self.i_step, self.slew), self.last):
+        self.slew.setToolTip(art_tip("How fast the load current steps", "load_step", "slew"))
+        # The probe's own load step (#166), where it has one, over the last one applied.
+        last = self.last[:1] + (tuple(step) if all(step) else self.last[1:])
+        for s, v in zip((self.v_ac, self.i_step, self.slew), last):
             s.setSpecialValueText("required")
             s.setKeyboardTracking(True)       # update the results while typing
             s.setValue(v)
             s.valueChanged.connect(self._update)
+        # Volts left (below, above) the DC value once a load's tolerance is copied, so the
+        # VRM accuracy and the DC drop each come off their own side (#172); None until then,
+        # or once the tolerance is typed in, when they come off the one value.
+        self._room: Optional[Tuple[float, float]] = None
+        self._filling = False
+        self.v_ac.valueChanged.connect(self._typed)
 
         # Copy the AC tolerance (#87) and the load step from the DC load on the probe's
         # pins; with none exactly on them, a dropdown picks among the loads on its part.
@@ -63,6 +74,10 @@ class TargetCalculator(QDialog):
         self.load.currentIndexChanged.connect(self._load_changed)
         self.btn_copy = QPushButton("Copy tolerance from DC load")
         self.btn_copy.clicked.connect(lambda: self.copy_tolerance(self.selected_load()))
+        # Or the load's own AC tolerance (#174), where it has one: greyed out otherwise.
+        self.btn_copy_ac = QPushButton("Copy AC tolerance from DC load")
+        self.btn_copy_ac.setEnabled(False)
+        self.btn_copy_ac.clicked.connect(lambda: self.copy_ac_tolerance(self.selected_load()))
         # Take the DC drop at the load's own pins, out of the last DC solve, off the
         # tolerance: the copper has used up that much of it before any load step.
         self.btn_drop = QPushButton("Subtract DC drop at the load")
@@ -72,8 +87,10 @@ class TargetCalculator(QDialog):
         self.btn_accuracy = _copy_button(
             "Subtract VRM DC accuracy", self.accuracies, self.subtract_accuracy,
             "Take the DC accuracy of the VRM driving this rail off the AC voltage tolerance: "
-            "the larger side of it, which the output may sit away from its set voltage "
-            "before any load step. Each click subtracts it again.",
+            "how far the output may sit from its target voltage before any load step. With "
+            "the tolerance copied from a DC load, each side of the accuracy comes off the "
+            "same side of the load's tolerance; otherwise its larger side comes off. Each "
+            "click subtracts it again.",
             "No LDO or switcher driving this probe's rail has a DC accuracy set")
         self.btn_current = QPushButton("Copy current from DC load")
         self.btn_current.clicked.connect(lambda: self.copy_current(self.selected_load()))
@@ -87,6 +104,7 @@ class TargetCalculator(QDialog):
         form.addRow("DC load", self.load)
         form.addRow("AC voltage tolerance", self.v_ac)
         form.addRow("", self.btn_copy)
+        form.addRow("", self.btn_copy_ac)
         form.addRow("", self.btn_drop)
         form.addRow("", self.btn_accuracy)
         form.addRow("Load step (ΔI)", self.i_step)
@@ -131,6 +149,20 @@ class TargetCalculator(QDialog):
         else:
             tip = "No DC load on this probe's part"
         self.btn_copy.setToolTip(tip)
+        ac = load and load.ac_tolerance
+        self.btn_copy_ac.setEnabled(bool(ac))
+        if ac:
+            tip = (f"Fill in the AC voltage tolerance from {ac.label()}: ± its tighter side. "
+                   "It is the swing allowed about the DC voltage, so the VRM accuracy and DC "
+                   "drop are already outside it: no need to subtract them.")
+        elif load and not load.vrm_input:
+            tip = (f"{load.name} has no AC tolerance: enter one in its DC load, or in % with "
+                   "a VRM feeding its rail")
+        elif load:
+            tip = f"{load.name} is a regulator's input, which has no AC tolerance"
+        else:
+            tip = "No DC load on this probe's part"
+        self.btn_copy_ac.setToolTip(art_tip(tip, "tol_split", "ac"))
         drop = load.drop if load else None
         self.btn_drop.setEnabled(bool(drop and drop.v > 0))
         if drop and drop.v > 0:
@@ -139,7 +171,7 @@ class TargetCalculator(QDialog):
                    f"{drop.v_effective:.4g} V, against the {drop.nominal:g} V its VRM is set "
                    "to. Each click subtracts it again.")
         elif drop:
-            tip = f"{drop.name} sits at its VRM's set voltage in the last DC solve"
+            tip = f"{drop.name} sits at its VRM's target voltage in the last DC solve"
         elif load:
             tip = (f"No DC result for {load.name}: solve the power tree on the DC tab, then "
                    "open the calculator again")
@@ -161,14 +193,39 @@ class TargetCalculator(QDialog):
 
     def copy_tolerance(self, load: Optional[ProbeLoad]):
         if load and load.tolerance:
-            self.v_ac.setValue(load.tolerance.v_ac_v * 1e3)
+            self._fill(load.tolerance.room())
+
+    def copy_ac_tolerance(self, load: Optional[ProbeLoad]):
+        if load and load.ac_tolerance:
+            self._fill(load.ac_tolerance.room())
 
     def subtract_drop(self, load: Optional[ProbeLoad]):
-        if load and load.drop:
-            self.v_ac.setValue(max(0.0, self.v_ac.value() - load.drop.v * 1e3))
+        if not (load and load.drop):
+            return
+        v = load.drop.v
+        self._take((v, 0.0) if load.drop.kind == "drop" else (0.0, v), v)
 
     def subtract_accuracy(self, a: VrmAccuracy):
-        self.v_ac.setValue(max(0.0, self.v_ac.value() - a.v * 1e3))
+        self._take(a.sides(), a.v)
+
+    def _take(self, sides: Tuple[float, float], v: float):
+        """Take ``sides`` (volts below, above) off the room left, or ``v`` off the AC
+        tolerance with no room known."""
+        if self._room is None:
+            self._fill(None, max(0.0, self.v_ac.value() * 1e-3 - v))
+        else:
+            self._fill((self._room[0] - sides[0], self._room[1] - sides[1]))
+
+    def _fill(self, room: Optional[Tuple[float, float]], v_ac: Optional[float] = None):
+        """Set the AC tolerance to the smaller side of ``room``, or to ``v_ac`` volts."""
+        self._filling = True
+        self.v_ac.setValue(max(0.0, min(room)) * 1e3 if room else v_ac * 1e3)
+        self._filling = False
+        self._room = room
+
+    def _typed(self, *_):
+        if not self._filling:
+            self._room = None
 
     def copy_current(self, load: Optional[ProbeLoad]):
         if load and load.current_a:

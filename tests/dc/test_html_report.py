@@ -76,7 +76,7 @@ def test_report_mesh_keeps_copper(tmp_path):
 @pytest.mark.parametrize("drop, label", [(20e-6, "Drop from 3.3 V (µV)"), (0.15, "V")])
 def test_narrow_voltage_maps_show_the_drop(monkeypatch, drop, label):
     """A rail that sags by µV would label its colorbar against an offset ("1e-5+3.2999"),
-    so it is drawn as the drop from the set point; a plainly labelled map is left (#145)."""
+    so it is drawn as the drop from the target voltage; a plainly labelled map is left (#145)."""
     import numpy as np
     from types import SimpleNamespace
     from matplotlib.tri import Triangulation
@@ -84,7 +84,7 @@ def test_narrow_voltage_maps_show_the_drop(monkeypatch, drop, label):
     from kipi.dc.report import html
     from kipi.dc.report.html import _has_offset, _layer_map
 
-    monkeypatch.setattr(html, "_png", lambda fig: fig)
+    monkeypatch.setattr(html, "_png", lambda fig, dpi=110: fig)
     g = np.mgrid[0:20:21j, 0:10:11j].reshape(2, -1).T
     lr = SimpleNamespace(pts2=g, tris=Triangulation(g[:, 0], g[:, 1]).triangles)
     fig = _layer_map(lr, 3.3 - drop * g[:, 0] / 20, False, "F.Cu: voltage", "turbo", "V",
@@ -93,3 +93,24 @@ def test_narrow_voltage_maps_show_the_drop(monkeypatch, drop, label):
     assert bar.get_ylabel() == label
     assert not _has_offset(fig, SimpleNamespace(ax=bar))
     assert ("3.299980 to 3.300000 V" in ax.get_title()) == (label != "V")
+
+
+def test_each_group_has_layer_tickboxes(tmp_path):
+    """A tickbox per copper layer over each group's 3D view hides or shows the layer in
+    the view and its maps (#181)."""
+    import re
+    snap = board()
+    s = setup("ldo", iq=0.01, ground=True)
+    tree = solve_tree(snap, s)
+    scenes = {n: build_result_scene(snap, g.result) for n, g in tree.groups.items()}
+    text = write_report(tmp_path / "r.html", tree, scenes, snap, s).read_text(encoding="utf-8")
+    assert text.count("class='layer-toggles'") == len(tree.groups)
+    names = {c.id: c.name for c in snap.stackup.copper}
+    for gi, scene in enumerate(scenes.values()):
+        bar = re.search(rf"<div class='layer-toggles' data-plot='plot{gi}'>(.*?)</div>",
+                        text).group(1)
+        assert re.findall(r"data-layer='([^']+)'", bar)[:len(scene.layers)] == [
+            names[lid] for lid in scene.layers]
+        for lid in scene.layers:      # its voltage and current-density maps
+            assert text.count(f"<figure data-plot='plot{gi}' data-layer='{names[lid]}'>") == 2
+    assert "Plotly.restyle" in text              # the tickboxes' script is in the page

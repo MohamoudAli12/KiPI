@@ -4,7 +4,152 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
-## 0.9.1 (in development)
+## 0.9.2 (in development)
+
+### Added
+- **Package PI models** (#53). The AC setup's new **Packages** tab reads a device's package
+  model, an N-port Touchstone file (Touchstone 1 or 2, S, Y or Z data), onto a board part
+  and keeps it in the setup file. Each port connects to the part's pins on a net and its
+  ground, to a die probe, or to nothing (open or shorted); ports named for the part's nets
+  are connected for you. Die probes appear in the Probes tab with no place on the board, and
+  their impedance is solved through the package from the board. The package also loads the
+  board's own probes. **From package model…** in the Probes tab adds one too.
+- **DC and AC tolerances for loads** (#174). A load can also give its tolerance in two
+  optional shares: DC (the VRM's accuracy plus the DC drop) and AC (ripple and transient,
+  in ±V or %). They are saved with the setup for a later tolerance analysis; the DC
+  solve's PASS still follows the total tolerance. Load model files carry them as
+  `dc_tolerance` and `ac_tolerance`, written like `tolerance`. A probe's target from a
+  model's load step uses the tighter side of the AC tolerance. The old
+  `load_step: {ac_tolerance_mv: …}` is still read, as ± that many mV. The target
+  calculator's **Copy AC tolerance from DC load** fills in the load's AC tolerance; it is
+  greyed out when the load has none.
+- **SPICE models for capacitors and series links** (#51). **Import SPICE model…** in a
+  capacitor model or series link reads the maker's model of the part, a two-pin
+  `.SUBCKT` of resistors, inductors and capacitors. Pick its subcircuit, and it is saved
+  in the setup. The AC and Coupled Noise solves take the part's impedance from it at every
+  frequency: a capacitor's ladder model keeps its shape, and a ferrite bead its resistive
+  peak. The RLC values are fitted to it for the tables, reports and DC solve. DC bias,
+  aging, temperature and tolerance scale a capacitor model's capacitors alike. Untick
+  **Use the SPICE model's impedance** to go back to the typed values. Only passive
+  networks are read: other elements are refused and `.include` lines are not followed.
+- **Split a load across nets** (#182). **Split across nets…** under the Loads list shares
+  one part's total current over several of its supply nets, as a load on each: for when
+  only a part's total draw is known and some of its pins are on a ferrite bead filtered
+  net, say. Each net's share follows its pin count (every pin drawing the same) or is
+  equal. A net the part already has a load on gets that load's current set; the others
+  get a new load with the part's ground pins.
+- **Estimated transient response in AC mode** (#166). A probe can have a **Load step** and
+  slew rate, filled in by the target calculator or a load model. The solve then estimates
+  the rail's dip when the load steps up and its rise when it steps back down. The
+  open-loop PDN impedance is used with the VRM's loop closed again at its control loop
+  bandwidth, by a typical proportional-integral compensation. The new **Transient** tab
+  plots the load step and the rail's deviation, with zoom, a **20 MHz limit** tickbox for
+  a scope's bandwidth limit, and ± target × ΔI dashed. The results table and the report
+  give each probe's undershoot and overshoot.
+- **AC fitted-pole and Touchstone export** (#86). Export a probe's impedance curve as a
+  fitted HyperLynx PLS one-port model or as sampled Touchstone Z1P data. Probes export
+  separately because the solve stores driving-point impedance, not mutual impedances.
+- **DC Accuracy Calculator** (#168). An LDO or switcher's VRM editor can calculate its
+  minimum and maximum output from feedback reference limits, divider resistor values and
+  tolerances, and its maximum feedback pin leakage, which may flow either way. The result
+  fills the VRM's DC accuracy as absolute output limits; the target voltage is unchanged.
+- **Diode series links** (#161). Enter the diode's constant forward drop with side A as
+  its anode, alongside its nonzero series resistance. DC solves include the drop and its
+  dissipation; AC solves use the resistance and ESL as the small-signal series model.
+  Reverse blocking is not modeled.
+- **Scan radius slider** (#175). Under **Scan nearby nets**, a slider sets how far from
+  the aggressor's parts the scan looks, 0.5 mm to 500 mm on a log scale, and shows how many
+  signal nets fall inside. It is the same value as Scan radius in Settings.
+- **Via-to-via inductive coupling** (#173). A victim's vias between the layers its traces
+  use are now vertical conductors in the capacitor loops' field, beside the loops' own via
+  drops, in full solves and in the scan's estimate. Each via is cut at the copper layers it
+  passes, so a plane shields the pieces behind it, and its EMF adds in series to the trace
+  that meets it. Before, a victim via was only a join between layers and picked up nothing.
+- **Capacitor deratings in the AC results** (#180). The results and the report list each
+  derating (DC bias, manufacturing tolerance, aging, dielectric temperature) and whether
+  the sweep applied it, or why not. The report's capacitor model table adds each model's
+  self-resonance at its derated capacitance and how far it moved. The Sweep tab groups the
+  deratings under **Capacitor derating**.
+- **Layer tickboxes in the DC report** (#181). Over each net group's 3D view, a tickbox
+  per copper layer (and one for the vias) hides or shows that layer in the view and its
+  voltage and current-density maps. A PDF report's attached 3D views have them too.
+- **Full screen and minimize for detached panes** (#186). Floated out of the main window,
+  the Board, setup and Log panels get their own minimize and maximize buttons, and F11
+  toggles the clicked panel full screen (floating it first if it is docked). Window
+  managers that do not show the buttons still have F11.
+- **Max rail drop per VRM** (#188). The DC results' VRMs table and the HTML report's VRM
+  table give the largest drop anywhere on the copper of the rail each VRM drives, in mV
+  and in % of its target voltage.
+- **Show all copper in the geometry view.** Every net's copper is drawn for context; the
+  new **Hide non-simulated copper** tickbox shows only the nets in the analysis.
+
+### Fixed
+- **Safer file reading** (#137). A compressed (.Z) ODB++ file that would decompress past
+  1 GB is refused rather than filling memory. A damaged or wrongly shaped .pdn.json says
+  it is not valid instead of failing with an error. Part and layer names in the reports'
+  hover text are escaped.
+- **False PARDISO failures on big DC solves** (#163). On a large board, especially in the
+  electro-thermal loop, PARDISO was refused with "relative residual 1.0e-08" and the
+  system was solved again with the slower SuperLU, whose result was no more accurate.
+  With vias and series links far stiffer than the copper sheets, rounding alone leaves
+  that residual in an exact solve. Each factorization is now judged by its normwise
+  backward error, which was about 1e-16 for every system of the board that showed this.
+  A broken or inaccurate factorization still falls back to SuperLU.
+- **AC probes on a ground tied to GND by a series link** (#171). A probe whose ground
+  pins are on an analog ground (GNDA joined to GND by a net tie, 0 Ω resistor or ferrite)
+  was refused, as its ground was not the one being simulated. The AC ground now takes in
+  every ground net series links tie to it: both are meshed as one return, with the link
+  in it, and capacitors to either ground count. Noise mode's board model does the same.
+  Without such a link, the error says to add one.
+- **VRM bandwidth is required in AC mode** (#183). An AC sweep of a rail whose VRM has no
+  control loop bandwidth is refused, with a note to enter it: without one the open-loop
+  impedance was judged where the converter's loop holds the rail. The VRM editor marks the
+  field required in AC mode.
+- **Subtract VRM DC accuracy** (#172). The target calculator subtracted the larger side
+  of the VRM's accuracy from the tighter side of the load's tolerance, even when the two
+  were on opposite sides of the target. A load allowed -5 / +3 % of 1 V behind a VRM
+  accurate to -3 / +1 % got 0 mV instead of the 20 mV left on each side. With a
+  tolerance copied from a DC load, the accuracy and the DC drop now come off their own
+  sides; a drop takes room below the target, a boost room above.
+- **Noise waveform legends.** Each view has one legend: the tickbox list beside the plot,
+  each curve's name in its colour. Under the plot, each shown curve's peak-to-peak and rms
+  as plotted, through the 20 MHz bandwidth limit when it is ticked; a hidden curve's
+  figures are hidden with it. The victim view's mechanisms are ticked in the same list,
+  and noise margins and logic levels are named on their lines. The HTML report's plots
+  have one legend each, with the same figures.
+- **Pins follow a newly picked part.** Picking another part for a victim's driver or
+  receiver (or any load, VRM or link pin row) replaces typed pin numbers that part does
+  not have on the net with the pins it does. Blank, every pin, stays blank.
+
+### Changed
+- **Clearer DC voltage results** (#177). A **Voltages** list beside the results tables
+  shows every voltage in mV from the target voltage, in % from it, or in volts. The web
+  report has the same list at its top, and a PDF report shows all three. The Loads table
+  now gives each load's mean, lowest pin, highest pin, tolerance (in the same unit) and
+  **margin**, how far its pins are inside the tolerance. This replaces the separate drop,
+  worst pin and worst % columns. The VRMs table gives the rail's lowest voltage in place of
+  its max drop in mV and %. The CSV export gains each load's margin.
+- **Bigger, sharper layer maps in the DC PDF report** (#184). The voltage, current
+  density and temperature maps go one to a row, two to a page, at about 200 dpi: each
+  page holds a layer's voltage and current density maps. They were six or more to a page.
+- **Reports on demand** (#185). In DC, AC and Coupled Noise mode, the **Report** button
+  writes a report of the shown results, in the format picked beside it, and opens it. It
+  is enabled once there are results: after a solve, or with saved results opened. This
+  replaces the Report tickbox, which wrote one after every solve. A report of a solve
+  shows the setup it was solved with; one of opened results, the setup as it is now.
+- **New VRMs default to a 50 kHz control loop bandwidth** (#190), a typical figure for a
+  point-of-load converter, so a new rail can be swept in AC mode straight away. Edit it to
+  the converter's datasheet figure; setups saved with no bandwidth keep none.
+- **Victims sit at their output levels** (#179). Held high, a victim's line is at the
+  supply through its driver's resistance into the receiver and termination; held low, at
+  ground. These replace the JESD8 minimum VOH and VOL, so the noise margin is the gap from
+  the real levels to VIH and VIL (800 mV for lightly loaded 3.3 V CMOS, 400 mV before). A
+  driver too weak to reach VIH is noted. The victim plots, here and in the HTML report,
+  are in volts against the margin instead of a percentage of it.
+- **"Set voltage" is now "Target voltage"** everywhere: the VRM editor, tooltips, reports,
+  help and README. The DC loads CSV column is `vrm_target_V`.
+
+## 0.9.1
 
 ### Added
 - **Harmonics drawn as stems.** Coupled Noise's spectrum view draws each harmonic as a

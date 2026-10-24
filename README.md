@@ -257,7 +257,7 @@ with two or more it lists them and asks you to close the others.
 ### 2. Pick Power Nets from Netlist
 
 The **Board** panel on the left lists every net in the extracted design. Tick the nets you want to analyze power distribution on: they are
-drawn in 3D and offered in the PI setup pin pickers. **Power & ground only** filters the
+offered in the PI setup pin pickers and can be filtered in 3D with **Hide non-simulated copper**. By default, all copper is drawn. **Power & ground only** filters the
 list, **All power** ticks every likely power and ground net, and **None** clears it. Type in
 the filter box to find a net. In order for a net to be simulated, it must be ticked here.
 
@@ -271,7 +271,8 @@ Below that:
 * **Copper layers** toggles layers in the view.
 * **Display** colors copper by layer or by net, exaggerates the stackup (**Z scale**), and
   shows or hides vias, pads, the board, the solder **Mask** and **Silkscreen** (off to start with), **PI Models**
-  and part **3D Models**. By layer, each copper layer has
+  and part **3D Models**. **Hide non-simulated copper** filters the geometry view to the
+  checked nets; with it off, all board copper is shown. By layer, each copper layer has
   its color from the PCB editor's color theme (KiCad's default theme if it cannot be read).
 * **PI Models** Marks the parts of the current analysis: a dot on each of their pads on the nets shown, with the
   part's name. In DC mode its VRMs, loads, series links and capacitors with a model; in AC mode its VRMs, series
@@ -351,17 +352,17 @@ as missing pins, or two VRMs on one group, are shown in red as you edit.
 | Field | Meaning |
 |---|---|
 | Type | **Source** (ideal supply), **LDO** (I_in = I_out + I_q) or **Switcher** (P_in = P_out / efficiency) |
-| Output pins, Set voltage | Where it drives, and to what voltage |
+| Output pins, Target voltage | Where it drives, and the rail's target voltage: what the VRM regulates to and what its loads are judged against |
 | Input pins | LDO and switcher only. The pins it draws from, which ties this VRM to its upstream net and defines the power tree. |
 | Efficiency / Quiescent | Switcher efficiency, LDO quiescent current |
 | Output current limit | Optional: the VRM PASSes if its total output current (all phases) is at most this. Leave at **no limit** to skip the check. |
-| Load line | Optional, in mΩ: the VRM regulates to its set voltage less this times its output current (what its connected loads and downstream VRMs actually draw). Drops are still measured from the set voltage, so the droop counts against load tolerances. |
+| Load line | Optional, in mΩ: the VRM regulates to its regulated voltage less this times its output current (what its connected loads and downstream VRMs actually draw). Drops are still measured from the regulated voltage, so the droop counts against load tolerances. |
 | Dropout | LDO only. The least input-to-output difference it regulates at |
-| Input range | Optional input range it regulates over: min and max, in V, or in ±V or % from the input rail's nominal voltage (the set voltage of the VRM driving it). A VRM whose solved input voltage is outside its range, or an LDO below its dropout, cannot hold its set voltage: every load it feeds, directly or downstream, is marked **VRM OUT OF REGULATION** |
-| DC accuracy | LDO and switcher only. Optional DC error of the output: min and max, in % or ±V from the set voltage, or in V. The target calculator can subtract its larger side from the AC voltage tolerance. |
+| Input range | Optional input range it regulates over: min and max, in V, or in ±V or % from the input rail's nominal voltage (the target voltage of the VRM driving it). A VRM whose solved input voltage is outside its range, or an LDO below its dropout, cannot hold its regulated voltage: every load it feeds, directly or downstream, is marked **VRM OUT OF REGULATION** |
+| DC accuracy | LDO and switcher only. Optional DC error of the output: min and max, in % or ±V from the target voltage, or in V; the DC Accuracy Calculator can work it out from the feedback divider. The target calculator subtracts each side of it from the same side of a copied load tolerance. |
 | Sense pins | Optional remote sense: the VRM regulates the voltage at these pins instead of at its output |
 | Ground pins | Optional: also solve the ground return, so the drop is measured output-to-ground |
-| Ground sense pins | Optional negative remote sense on the ground net: the VRM holds its set voltage relative to these pins instead of 0 V (needs ground pins) |
+| Ground sense pins | Optional negative remote sense on the ground net: the VRM holds its regulated voltage relative to these pins instead of 0 V (needs ground pins) |
 | Phases | Parallel phases of a multi-phase regulator. **Edit phase** picks which phase the output, input and ground pins belong to. |
 
 KiPI automatically calculates the input current into the input pins on a VRM based on the efficiency, type, and output power (which is based on defined loads).
@@ -370,7 +371,7 @@ KiPI automatically calculates the input current into the input pins on a VRM bas
 give it its own output pins (e.g. its inductor), input pins and ground pins. A new phase
 takes the next parts in sequence (`L1` → `L2`, `Q1` → `Q2`), or on a board annotated by
 schematic sheet the same parts on the next sheet (`L101`, `Q101` → `L201`, `Q201`), or copies the previous one when
-there is no next part, so check its pins. All phases share the VRM's set
+there is no next part, so check its pins. All phases share the VRM's target
 voltage, type, efficiency and sense pins. Each phase carries an equal share of the output
 current and settles at whatever voltage its copper needs to deliver that share. The VRM
 regulates its sense pins or, without them, the average of its phase outputs. Each phase draws
@@ -387,13 +388,18 @@ To try it without a design of your own, open the example board in
   between splitting the current evenly over all pins and giving explicit **pin groups**,
   each with its own current (**Add pin group**, or **One group per pin**). Use groups when one
   part draws different currents on different rails or pins, e.g. a core and an I/O supply.
+* **Split across nets…** (under the list) shares one part's total current over several of
+  its supply nets, a load on each: e.g. when only a chip's total draw is known and some of
+  its pins are on a ferrite bead filtered net. Each net gets its pins' share (every pin
+  drawing the same) or an equal share. A net the part already has a load on gets that
+  load's current set; the others get a new load.
 * **Ground pins** (optional) include the ground return. KiPI superimposes all VRM and load return currents to form a comprehensive GND plane current model.
 * **Tolerance** is the PASS/FAIL limit: a min and a max, each optional, in % from the VRM
-  set point (e.g. -3 % / +5 %), in volts from it (±V, e.g. -0.1 / +0.15 V) or in volts (e.g.
+  target voltage (e.g. -3 % / +5 %), in volts from it (±V, e.g. -0.1 / +0.15 V) or in volts (e.g.
   3.135 to 3.465 V). A load passes when every
   pin is within it, none below it (a **drop**) or above it (a **boost**). Boosts
   happen with remote sense, where the VRM raises its output pins to hold a sense point
-  further down the copper, so pins nearer the VRM sit above the set point. A load on a net
+  further down the copper, so pins nearer the VRM sit above the regulated voltage. A load on a net
   group whose solve did not converge shows **NOT CONVERGED** instead of a result.
 * Before solving, KiPI checks that every load pin reaches its VRM through copper or series
   links. Unconnected pins draw nothing: the load's current goes through its other pins, or,
@@ -416,8 +422,10 @@ To try it without a design of your own, open the example board in
     - name: VCCINT
       pins: [F7, F9, H7]
       current_a: 1.2
-      tolerance: {min: -3, max: 3, unit: "%"}     # V, ±V or %
-      load_step: {step_a: 0.6, slew_a_per_us: 5, ac_tolerance_mv: 30}
+      tolerance: {min: -3, max: 3, unit: "%"}           # total: V, ±V or %
+      dc_tolerance: {min: -1.5, max: 1.5, unit: "%"}    # VRM accuracy + DC drop
+      ac_tolerance: {min: -0.03, max: 0.03, unit: "±V"} # ripple + transient: ±V or %
+      load_step: {step_a: 0.6, slew_a_per_us: 5}
   ```
 
 ![Load editor](docs/images/setup_loads.png)
@@ -431,7 +439,9 @@ the resistance is read from its value field: `10m`, `0.005`, `4k7`, `0R1`, `5 m�
 all work, and anything after the value (`1% 0603`) is ignored. You can still type your own.
 Nets joined this way are solved together as one rail, and each rail may hold only one VRM.
 A net with no connection to its VRM is reported, not guessed at. **ESL** is only used by the AC
-analysis. I squared R losses in series links are calculated. **In order to assign a series link, the nets on either side must both be defined as power nets in the net selection pane**. In practice, 0 ohm resistors are never possible; Check your jumper's datasheet for max DCR.
+analysis. **Import SPICE model…** uses the maker's SPICE model of the part (a ferrite bead's,
+say): AC takes the link's impedance from it at every frequency, keeping a bead's resistive
+peak, and DC its resistance at DC. Only passive R, L and C subcircuits are read. I squared R losses in series links are calculated. **In order to assign a series link, the nets on either side must both be defined as power nets in the net selection pane**. In practice, 0 ohm resistors are never possible; Check your jumper's datasheet for max DCR.
 
 **Solve tab**: every combined rail, with a checkbox. Untick the rails that are not modeled or
 routed yet to solve the rest; only the ticked rails are validated, and the choice is saved.
@@ -502,7 +512,7 @@ the `.yml` file, which is read from then on. AI Agents can make quick work of po
 
 **Data Prepoulation**: As you pick pins when setting up the power tree, KiPI pre-fills the fields that usually follow from those selections. Every prepopulation can be changed, and a field the extracted board gives no answer for is left as it was:
 
-* **VRM set voltage** from the output net's name: `+3V3`, `3.3V`, `V1P8`, `VDD_0V75`, `-5V`,
+* **VRM target voltage** from the output net's name: `+3V3`, `3.3V`, `V1P8`, `VDD_0V75`, `-5V`,
   `VBUS` (5 V).
 * **Ground pins** of a VRM, load or AC probe: the same part's pins on its ground net. Grounds
   aren't always called GND, so KiPI tries grounds the setup already uses, then names like
@@ -525,11 +535,11 @@ tab, Solve x of n will be displayed). Every rail is meshed and solved, the downs
 back towards the source, so each VRM's input current includes everything it feeds. Progress
 and solver residuals stream into the log; **Cancel** stops the run.
 
-Tick **Report** before solving to also write
-`<board>_kipi_report_<date>_<time>.html` next to the board (the time stamp keeps each
-solve's report rather than overwriting the last). It opens in your web browser when the solve finishes, and **Open report** opens it
-again later. Choose **PDF** beside it for a `.pdf` to print or attach instead: the same
-tables and maps, with the interactive 3D views in a web page attached inside the PDF
+Once there are results, after a solve or with saved results opened, click **Report** to
+write `<board>_kipi_report_<date>_<time>.html` of them next to the board (the time stamp
+keeps each report rather than overwriting the last). It opens in your web browser when it
+is written, and **Open report** opens it again later. Choose **PDF** beside it for a `.pdf` to print or attach instead: the same
+tables and maps (the layer maps one to a row, a layer's pair to a page), with the interactive 3D views in a web page attached inside the PDF
 (`<report>_3d.html`; its **3D Results View** link, or the paperclip beside it, opens it in
 your browser). Its User notes box is a form field:
 type in it in Acrobat, a web browser, Preview or most other PDF viewers and save the PDF to
@@ -537,7 +547,8 @@ keep the notes (printed, it is a box to write in). The HTML report is a
 single portable file, containing:
 
 * the summary and every results table;
-* an interactive 3D view per rail (rotate, zoom, hover for values);
+* an interactive 3D view per rail (rotate, zoom, hover for values), with a tickbox per
+  copper layer (and the vias) that hides or shows it in the view and its maps;
 * per-layer statistics, with top-down voltage and current-density maps;
 * the board temperature map when thermal is on.
 
@@ -562,8 +573,8 @@ In the **Results** pane, choose a **net group** and a **field** to show in 3D:
 * **Temperature** (with thermal on)
 
 Voltages are measured against the source's ground pins (0 V). When ground returns are
-solved, the ground under a load rises above 0 V, so a supply plane can read above its VRM's set
-point even though a remotely sensed rail is exactly on target. The Loads tab's effective
+solved, the ground under a load rises above 0 V, so a supply plane can read above its VRM's regulated
+voltage even though a remotely sensed rail is exactly on target. The Loads tab's effective
 voltage (supply minus ground at the load) is the figure to compare with the load's voltage requirements.
 
 The color scale covers the whole result, on every layer. To look closer, type a minimum and
@@ -592,7 +603,7 @@ tables sort the same way:
 | Tab | Shows |
 |---|---|
 | Loads | Each load's current, effective voltage, drop or boost, worst pin and PASS/FAIL. Double-click to show its group. |
-| VRMs | Output and input voltage, current and power, conversion loss, and PASS/FAIL against the output current limit, with a row per phase for multi-phase VRMs |
+| VRMs | Output and input voltage, current and power, conversion loss, the largest drop on the rail it drives (mV and % of its target voltage), and PASS/FAIL against the output current limit, with a row per phase for multi-phase VRMs |
 | Series links | Current and loss in each series part  (I squared R losses)|
 | Vias | Every via and PTH barrel ranked by current. The **Current limit** for PASS/FAIL starts at 1 A, a placeholder: set your own, or 0 for none. Double-click a row to fly to it. |
 | Losses | Copper loss per group and layer, vias, series links and VRM conversion |
@@ -617,7 +628,9 @@ series links with DC mode (every VRM field can be edited in either mode) and add
 * **Capacitors tab**: RLC models (capacitance, ESL, ESR) for the decoupling capacitors, each
   shared by a group of identical parts. **Models from values** makes one model per capacitor
   value that has none yet, reading the capacitance from the value; enter the ESL and ESR
-  from the datasheet. The table lists every capacitor between ticked nets: tick parts to
+  from the datasheet, or **Import SPICE model…** to use the maker's model of the part. Its
+  subcircuit is saved in the setup, and the AC and Coupled Noise solves take each part's
+  impedance from it at every frequency, with C, ESL and ESR fitted to it. The table lists every capacitor between ticked nets: tick parts to
   assign them to the selected model, with **Tick same value**, **Tick same footprint**,
   **Tick same value + footprint**, **Tick shown** and **Untick shown** for many at once.
   The table shows each part's footprint, so 0402 and 0603 parts of one value can get
@@ -626,7 +639,7 @@ series links with DC mode (every VRM field can be edited in either mode) and add
   A ceramic model (X5R, X7R…) with a **Voltage rating** is derated by the DC voltage across
   each of its parts: enter the rating and how much capacitance it **Keeps at rating**
   (from the datasheet's DC bias curve; 40 % by default). The voltage is what the last DC
-  solve found across each part, or else the rail's VRM set point. **Models from values**
+  solve found across each part, or else the rail's VRM regulated voltage. **Models from values**
   reads the rating from values such as `10uF 6.3V X5R` for class II dielectrics.
   A model's **Dielectric** (X7R, X5R, Y5V…) fills in its typical **Aging** rate, in % of
   capacitance lost per decade of hours (enter the datasheet's rate if it gives one), and
@@ -642,19 +655,24 @@ series links with DC mode (every VRM field can be edited in either mode) and add
   It can copy the tolerance and the load step from the DC load on the probe's pins, and
   subtract from the tolerance both the DC accuracy of the VRM driving the rail and, from the
   last DC solve, the **DC drop at the load** itself: how far that load's effective voltage
-  sits from its VRM's set point (solve the power tree first, or the button is disabled).
-  Targets apply only above the rail's VRM **Control loop bandwidth**: the AC solve leaves
+  sits from the target voltage of the VRM driving it (solve the power tree first, or the
+  button is disabled).
+  Targets apply only above the rail's VRM **Control loop bandwidth**, which a rail needs
+  before it can be solved (a new VRM starts at 50 kHz): the AC solve leaves
   the VRM out of circuit (the open-loop PDN impedance, capacitive only), and below its bandwidth the
   converter's control loop is assumed to hold the rail. If the bandwidth is at or above the target frequency,
   the target across all swept frequencies are judged and the results say so. The method follows Smith et al.,
   ["Power Distribution System Design Methodology and Capacitor Selection for Modern CMOS
   Technology"](https://doi.org/10.1109/6040.784476), IEEE Trans. Adv. Packaging, 1999.
 * **Sweep tab**: start and stop frequency, points per decade, and how many copper field
-  solves per decade (the copper's response is interpolated between them). **Capacitor DC
-  bias** turns the DC bias estimate on or off for every model at once. **Capacitor
-  manufacturing tolerance** solves every model that has a **Manufacturing tolerance** at the
-  low end of it (subtracting it: a ±10 % model keeps 90 %), the worst case for a PDN.
-  **Capacitor aging**
+  solves per decade (the copper's response is interpolated between them). The
+  **Capacitor derating** group holds the deratings; the results and the report list which
+  were applied, and the report's capacitor table gives each model's derated capacitance
+  and self-resonance. **DC bias** turns the DC bias estimate on or off for every model at
+  once. **Manufacturing tolerance** solves every model that has a **Manufacturing
+  tolerance** at the low end of it (subtracting it: a ±10 % model keeps 90 %), the worst
+  case for a PDN.
+  **Aging**
   ages every model with a dielectric by the **Hours operated** (ten years by default; type
   them, or drag the slider that shows while aging is ticked), on top
   of its DC bias: each loses its aging rate per decade of hours past 1000 hours.
@@ -669,7 +687,9 @@ series links with DC mode (every VRM field can be edited in either mode) and add
 |---|---|
 | ![Capacitors tab](docs/images/ac_capacitors.png) | ![Target impedance calculator](docs/images/ac_target_calc.png) |
 
-Pick the **Rail** (by its VRM) and **Ground** under the tabs and click **Solve rail**. The copper
+Pick the **Rail** (by its VRM) and **Ground** under the tabs and click **Solve rail**. The
+ground takes in every ground net a series link ties to it, so a probe on an analog ground
+(GNDA joined to GND by a net tie or a ferrite) is solved with that link in its return. The copper
 of the rail and its ground is field-solved as a 2.5D model with both faces of every sheet:
 plane resistance with skin effect, spreading inductance, plane-pair capacitance and cavity
 resonances, and via inductance all come out of the mesh. The capacitors and series links are
@@ -682,10 +702,16 @@ probe, with its target dashed in the same color. Click a curve to place a cursor
 use ←/→ (Shift: ×10) to move along the curve, ↑/↓ to change curve, and Esc or right-click to
 remove it. The **Board map** tab beside it shows the solve from above while it runs and
 after: the mesh of the rail and its ground, layer by layer, with the probes and the
-capacitors marked by model. The Info box shows the cursor's frequency, |Z|, phase, R and X, the reactance as an
+capacitors marked by model. The **Transient** tab estimates the rail's response at each
+probe that has a **Load step** and slew rate (set on the probe, or filled in by the target
+calculator): the undershoot when the load steps up and the overshoot when it steps back
+down. The VRM's loop is closed again from its control loop bandwidth with a typical
+compensation, so the slow part is an estimate, and the fast part comes from the solve.
+**20 MHz limit** shows it as a scope's bandwidth limit would. The Info box shows the cursor's frequency, |Z|, phase, R and X, the reactance as an
 equivalent L or C, PASS/FAIL against the target with the margin in dB at the cursor frequency, and every other
 probe's |Z| at that frequency. The results table gives each probe's minimum and worst |Z|
-(closest to, or furthest over, the target) and PASS/FAIL; the notes list the capacitors that
+(closest to, or furthest over, the target), its estimated undershoot and overshoot, and
+PASS/FAIL; the notes list the capacitors that
 were left out for having no model. Each rail keeps its last result, so switching **Rail** shows
 another rail's curves without solving again. **Export CSV…** writes |Z|, R and X at every
 frequency. **Save results…** writes every solved rail to a `.kipi-ac-results` file, which
@@ -694,9 +720,10 @@ JSON and arrays in a zip, safe to share.
 
 ![The Board map of the core rail's solve: the VCORE and GND mesh, the probe and the capacitors by model](docs/images/ac_board_map.png)
 
-Tick **Report** next to **Solve rail** to also write
-`<board>_<rail>_ac_report_<date>_<time>.html` next to the board after each solve. It opens in your web browser when the solve
-finishes, and **Open report** opens it again later. Choose **PDF** for a `.pdf` instead,
+Click **Report** next to **Solve rail** to write
+`<board>_<rail>_ac_report_<date>_<time>.html` of the shown rail's results next to the board,
+after its solve or with saved results opened. It opens in your web browser when it is
+written, and **Open report** opens it again later. Choose **PDF** for a `.pdf` instead,
 with images of the |Z| plot and the board map. Like the DC report, it is one
 portable file you can share. It has the probe table with margins, an interactive |Z|
 plot with the targets and each capacitor model's own curve, a board map of the rail's copper
@@ -731,8 +758,10 @@ layer, behind the ground plane. Open its snapshot to try it.
   series or parallel terminated, an LVDS leg, an analog input, or high impedance
   (undriven: a tri-stated or floating net). The type fills in the driver and receiver
   resistances, the receiver capacitance and any termination. An open drain has a separate **Driving low** resistance: the line is held by its 4.7 kΩ pull-up
-  when high, and by the switch when low. The **Logic level** gives the JESD8 levels and so
-  the noise margin (400 mV for 3.3 V CMOS), unless you enter one.
+  when high, and by the switch when low. The **Logic level** sets the output levels (the
+  supply through the driver's resistance into the load, and ground) and the JESD8 input
+  thresholds, and so the noise margin (800 mV for lightly loaded 3.3 V CMOS), unless you
+  enter one.
 * **Capacitors tab**: the same capacitor models as AC mode.
 * **Settings tab**: the harmonics kept, the ringing's least damping (and the soft edge's),
   how finely victim traces are cut into cross-sections, and the **Board model**: AC mode's field model of the
@@ -743,7 +772,8 @@ layer, behind the ground plane. Open its snapshot to try it.
 Pick the **Aggressor** and click **Solve**. The waveforms are exact Fourier series of the
 converter's piecewise-linear shapes, so they appear in well under a second, and the victims
 follow. Tick **Scan nearby nets** to also estimate every signal net near the aggressor and
-solve the worst in full. Their real drivers are not known, so they are solved as undriven,
+solve the worst in full; the **Scan radius** slider under it sets how near, and shows how
+many nets that takes in. Their real drivers are not known, so they are solved as undriven,
 the worst case for capacitive coupling, unless **Scan: victim type** in Settings says
 otherwise; a net that is a victim already keeps its own type. The **Waveforms** tab plots the switch node of every phase with its
 ringing, the inductor currents, each capacitor's ripple current and the rails' ripple
@@ -760,12 +790,14 @@ own curve, and **Driver end** for the noise at the other end of the line.
 
 ![Victim noise for SIG_SW: the superposition at the receiver with its capacitive and inductive parts, and the results table](docs/images/noise_victim.png)
 
-**Victim held high and low** draws the receiver's line as it really sits: at VOH with VIH
-below it, and at VOL with VIL above it, with the noise on each. Each plot gives how far the
-noise reaches toward its threshold and what share of that state's margin it uses. An
+**Victim held high and low** draws the receiver's line as it really sits: at the driver's
+output high, the supply less what its resistance drops into the load, with VIH below it,
+and at its output low with VIL above it, with the noise on each. Each plot gives how far
+the noise reaches toward its threshold and how far away that threshold is. The victim
+plots are in volts. An
 open-drain line is solved once per state, as its driver holds it far harder low than high.
 
-![SIG_SW held high at 2.4 V and low at 0.4 V, with the noise riding on each level](docs/images/noise_states.png)
+![SIG_SW held high and low, with the noise riding on each level](docs/images/noise_states.png)
 
 **Coupling in 3D**, under the results table, shows where the selected victim's peak noise
 couples in. Each piece of its traces is colored by its share of the receiver's peak: red
@@ -781,9 +813,10 @@ induces most of it.
 The mechanisms point to different fixes. Capacitive noise comes from the switch node's
 dV/dt: keep victims away from its copper or behind a plane, and drive them harder.
 Inductive noise comes from the hot loop's dI/dt: keep the loop small and over a solid plane,
-and route victims away from it. Common noise comes from the switching current's return:
+and route victims away from it, their vias too: a victim via beside the loop's vias couples
+to their vertical current. Common noise comes from the switching current's return:
 give the hot loop its own short ground return and keep the victim's driver and receiver
-grounds out of it. Tick **Report** for an HTML or PDF report after each solve; **Save
+grounds out of it. Click **Report** for an HTML or PDF report of the shown aggressor's results; **Save
 results…** writes a `.kipi-noise-results` file that **Open results…** reopens in this mode.
 
 ### Tips and troubleshooting
@@ -919,7 +952,7 @@ The tests also solve the example board and check that its committed setup still 
 | `kipi/dc/report/` | Self-contained HTML report (Plotly 3D, matplotlib maps), or a PDF of it (`kipi/core/pdf.py`) |
 | `kipi/dc/viz/` | DC result meshes: voltage, drop, current density, power (no Qt) |
 | `kipi/dc/gui/` | The PI setup and results panel |
-| `kipi/ac/` | AC analysis: PDN impedance over frequency. Capacitor and probe model, target impedance, the 2.5D two-face field solver and sweep (`solver/`), the HTML report (`html_report.py`), the board map data (`board_map.py`), the AC setup panel, impedance plot and Board map tab (`gui/`) |
+| `kipi/ac/` | AC analysis: PDN impedance over frequency. Capacitor and probe model, target impedance, the 2.5D two-face field solver and sweep (`solver/`), the HTML report (`html_report.py`), the board map data (`board_map.py`), the estimated transient (`transient.py`), the AC setup panel, impedance plot, Board map and Transient tabs (`gui/`) |
 | `kipi/noise/` | Coupled Noise analysis: the aggressor and victim model, the converter's waveforms as Fourier series (`waveforms.py`), the hot loop's parasitics (`parasitics.py`), capacitive and inductive coupling extraction (`extract/`), the victim's line network (`network.py`) and solve (`victims.py`), the nearby-net scan, the 3D coupling overlay (`viz.py`), the HTML report, the setup panel and Waveforms tab (`gui/`) |
 | `kipi/gui/` | PySide6 application shell shared by every mode: main window, mode switch, 3D viewer, worker threads, About and Help |
 | `docs/help.html` | The user guide opened by **Help**; a single offline HTML file |

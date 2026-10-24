@@ -11,6 +11,7 @@ and output capacitors. A solve covers one aggressor.
 from __future__ import annotations
 
 import html
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -20,7 +21,7 @@ from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QSpinBox, QTableWidget, QTabWidget, QVBoxLayout, QWidget,
+    QSlider, QSpinBox, QTableWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from kipi.ac.gui.caps import describe_cap, models_from_values, new_cap
@@ -100,13 +101,13 @@ class AggressorEditor(_Editor):
         for w, text, art in (
                 (self.name, "A name for this aggressor", None),
                 (self.vrm, "The switching regulator (a VRM of type Switcher, set up in DC or "
-                           "AC mode) this aggressor is. Its input rail and set voltage give "
+                           "AC mode) this aggressor is. Its input rail and target voltage give "
                            "the input and output voltages.", ("converter",)),
                 (self.topology, "Buck or boost. Auto takes it from the VRM's voltages: an "
                                 "input above the output is a buck, below it a boost.",
                  ("converter", "buck", "boost")),
                 (self.vin, "The input voltage. Blank uses the VRM's: the middle of its input "
-                           "range if it has one, else the set voltage of the VRM feeding its "
+                           "range if it has one, else the target voltage of the VRM feeding its "
                            "input rail.", ("converter", "vin")),
                 (self.load_a, "The total output current, all phases. Blank uses the DC "
                               "setup's loads on the VRM's output rail, plus the input current "
@@ -724,6 +725,21 @@ class VictimEditor(_Editor):
             self.preset.blockSignals(False)
 
 
+# The scan radius slider (#175) runs logarithmically over the radius field's range, its
+# steps rounded to two figures.
+RADIUS_MIN_MM, RADIUS_MAX_MM, RADIUS_STEPS = 0.5, 500.0, 120
+
+
+def radius_of_step(step: int) -> float:
+    r = RADIUS_MIN_MM * (RADIUS_MAX_MM / RADIUS_MIN_MM) ** (step / RADIUS_STEPS)
+    return float(f"{r:.2g}")
+
+
+def step_of_radius(r: float) -> int:
+    r = min(max(r, RADIUS_MIN_MM), RADIUS_MAX_MM)
+    return round(RADIUS_STEPS * math.log(r / RADIUS_MIN_MM) / math.log(RADIUS_MAX_MM / RADIUS_MIN_MM))
+
+
 def _topology_or_buck(setup: PISetup, a: Aggressor) -> str:
     """The aggressor's topology, or a buck where its voltages do not say yet."""
     try:
@@ -755,6 +771,7 @@ class NoisePanel(QWidget, PartSelection):
     coupling_changed = Signal()                    # the 3D coupling overlay to draw changed
     setup_changed = Signal()
     results_saved = Signal(str)
+    report_requested = Signal(object, str)         # the shown NoiseResult, "html" or "pdf"
     part_selected = Signal(str, str, bool)         # see ACPanel.part_selected
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -837,9 +854,29 @@ class NoisePanel(QWidget, PartSelection):
         row.addWidget(self.cmb_victims, 2)
         row.addWidget(self.chk_scan)
         lay.addLayout(row)
+        # The scan radius at hand beside the scan (#175), the same value as in Settings.
         row = QHBoxLayout()
-        self.report_option = ReportOption("waveforms, victims and scan, after each solve",
-                                          self._report_changed, self)
+        self.sld_radius = QSlider(Qt.Horizontal, self)
+        self.sld_radius.setRange(0, RADIUS_STEPS)
+        self.lbl_radius = QLabel(self)
+        tip_radius = art_tip(
+            "How far from the aggressor's parts the scan looks: every signal net with a "
+            "trace this close is estimated. Shown with the number of nets inside it. The "
+            "same value as Scan radius in Settings.", "scan_radius", "radius")
+        lbl = QLabel("Scan radius", self)
+        for w in (lbl, self.sld_radius, self.lbl_radius):
+            w.setToolTip(tip_radius)
+        self.sld_radius.valueChanged.connect(self._radius_slid)
+        self.spin_radius.valueChanged.connect(self._show_radius)
+        row.addWidget(lbl)
+        row.addWidget(self.sld_radius, 2)
+        row.addWidget(self.lbl_radius, 1)
+        lay.addLayout(row)
+        row = QHBoxLayout()
+        self.report_option = ReportOption(
+            "the shown aggressor's waveforms, victims and scan",
+            lambda fmt: self.report_requested.emit(self.result, fmt), self._report_changed,
+            self)
         self.btn_report = QPushButton("Open report", self)
         self.btn_report.setToolTip("Open the shown aggressor's report")
         self.btn_report.setVisible(False)
@@ -947,7 +984,7 @@ class NoisePanel(QWidget, PartSelection):
         f.addRow("Coupling window", self.spin_window)
         f.addRow(self.chk_board)
         f.addRow("Field solves per decade", self.spin_fpd)
-        self.spin_radius = _spin(0.5, 500, s.scan_radius_mm, 1, " mm", 1)
+        self.spin_radius = _spin(RADIUS_MIN_MM, RADIUS_MAX_MM, s.scan_radius_mm, 1, " mm", 1)
         self.spin_top = QSpinBox()
         self.spin_top.setRange(1, 1000)
         self.spin_top.setValue(s.scan_top_n)
@@ -1077,7 +1114,8 @@ class NoisePanel(QWidget, PartSelection):
         self.cmb_scan_type.setCurrentIndex(max(self.cmb_scan_type.findData(s.scan_preset), 0))
         self.cmb_scan_type.blockSignals(False)
         self.spin_scan_drv.setEnabled(s.scan_preset == CUSTOM)
-        self.report_option.set_value(s.html_report, s.report_format)
+        self.report_option.set_value(s.report_format)
+        self._show_radius()
 
     # ------------------------------------------------------------------ data
     def nets(self) -> List[str]:
@@ -1149,9 +1187,42 @@ class NoisePanel(QWidget, PartSelection):
     def _scan_toggled(self, on: bool):
         self.setup.noise.scan = on
         self.setup_changed.emit()
+        self._show_radius()
 
-    def _report_changed(self, on: bool, fmt: str):
-        self.setup.noise.html_report, self.setup.noise.report_format = on, fmt
+    def _radius_slid(self, step: int):
+        self.spin_radius.setValue(radius_of_step(step))     # its change shows it
+
+    def _show_radius(self, *_):
+        """The slider and its readout at the scan radius, with the nets inside it."""
+        r = self.spin_radius.value()
+        self.sld_radius.blockSignals(True)
+        self.sld_radius.setValue(step_of_radius(r))
+        self.sld_radius.blockSignals(False)
+        on = self.chk_scan.isChecked()
+        self.sld_radius.setEnabled(on)
+        self.lbl_radius.setEnabled(on)
+        text = f"{r:g} mm"
+        agg = self._aggressor()
+        if on and agg is not None and self.snapshot is not None:
+            from kipi.noise.scan import candidates
+            exclude = [ph.switch_net for ph in agg.phases] + [v.net for v in self.setup.victims]
+            try:
+                n = len(candidates(self.snapshot, agg, r, exclude))
+            except Exception:                   # a board the scan cannot read: no count
+                n = None
+            if n is not None:
+                text += f", {n} net{'' if n == 1 else 's'}"
+        self.lbl_radius.setText(text)
+
+    def _report_changed(self, fmt: str):
+        self.setup.noise.report_format = fmt
+
+    def set_report(self, result, path: str):
+        """A report just written of ``result``: the Open report button opens it while
+        ``result`` is shown."""
+        result.report_path = path
+        if result is self.result:
+            self.btn_report.setVisible(True)
 
     def _open_report(self):
         path = getattr(self.result, "report_path", "")
@@ -1167,6 +1238,7 @@ class NoisePanel(QWidget, PartSelection):
         self.setup.noise.aggressor = self.cmb_agg.currentData() or ""
         self._on_changed()
         self._show_aggressor_result()
+        self._show_radius()
 
     def _on_changed(self):
         self.setup_changed.emit()
@@ -1247,6 +1319,8 @@ class NoisePanel(QWidget, PartSelection):
 
     def _clear_notes(self):
         self.result = None
+        self.btn_report.setVisible(False)
+        self.report_option.set_available(False)
         self.txt_notes.clear()
         reset_sort(self.tbl_victims)
         self.tbl_victims.setRowCount(0)
@@ -1297,6 +1371,7 @@ class NoisePanel(QWidget, PartSelection):
         self.txt_notes.setText("<br>".join(lines))
         self._fill_victims(result)
         self.btn_report.setVisible(bool(getattr(result, "report_path", "")))
+        self.report_option.set_available(True)
         self.result_selected.emit(result)
 
     def _fill_victims(self, result):

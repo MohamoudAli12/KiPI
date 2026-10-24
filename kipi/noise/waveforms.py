@@ -25,7 +25,7 @@ so the amplitude of harmonic k is 2|c_k|. Capacitor currents carry no DC.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -181,8 +181,13 @@ class CapBranch:
     esl_h: float
     path_l_h: float = 0.0
     path_r_ohm: float = 0.0
+    # The part's model, when its impedance is a SPICE model's (#51), at this capacitance.
+    model: Optional[object] = field(default=None, repr=False, compare=False)
 
     def impedance(self, omega: np.ndarray) -> np.ndarray:
+        if self.model is not None and self.model.uses_spice:
+            m = replace(self.model, capacitance_f=self.capacitance_f)
+            return m.impedance(omega) + self.path_r_ohm + 1j * omega * self.path_l_h
         return (self.esr_ohm + self.path_r_ohm + 1j * omega * (self.esl_h + self.path_l_h)
                 + 1.0 / (1j * omega * self.capacitance_f))
 
@@ -208,6 +213,8 @@ class PhaseParts:
     soft_zeta: float = 0.5          # the least damping of a soft (diode-clamped) edge
     qrr_c: float = 0.0              # the reverse-recovery charge a hard edge sweeps out
     dead_time_s: float = 20e-9      # how long the inductor current has to carry a soft edge
+    rds_on_hs_ohm: float = 0.0      # high-side switch on-resistance
+    rds_on_ls_ohm: float = 0.0      # low-side switch on-resistance
 
 
 @dataclass
@@ -324,12 +331,23 @@ def synthesize(topology: str, vin: float, vout: float, iout: float, iin: float, 
         il_t, il_y = [0.0, DT], [lo, hi]
         on, off = edge_shapes(topology, lo, hi, rise, fall, vin if buck else vout, ph)
         t_on, t_off = on.time_s, off.time_s
-        vt = [-t_on / 2, t_on / 2, DT - t_off / 2, DT + t_off / 2]
-        vy = [0.0, vin, vin, 0.0] if buck else [vout, 0.0, 0.0, vout]
-
         def i_l(t, lo=lo, hi=hi):
             t = t % T
             return lo + (hi - lo) * t / DT if t <= DT else hi - (hi - lo) * (t - DT) / (T - DT)
+
+        # The switch node follows the inductor current through each conducting
+        # switch's Rds(on), including the current ripple over each on interval.
+        vt = [-t_on / 2, t_on / 2, DT - t_off / 2, DT + t_off / 2]
+        if buck:
+            vy = [-i_l(vt[0]) * ph.rds_on_ls_ohm,
+                  vin - i_l(vt[1]) * ph.rds_on_hs_ohm,
+                  vin - i_l(vt[2]) * ph.rds_on_hs_ohm,
+                  -i_l(vt[3]) * ph.rds_on_ls_ohm]
+        else:
+            vy = [vout + i_l(vt[0]) * ph.rds_on_hs_ohm,
+                  i_l(vt[1]) * ph.rds_on_ls_ohm,
+                  i_l(vt[2]) * ph.rds_on_ls_ohm,
+                  vout + i_l(vt[3]) * ph.rds_on_hs_ohm]
 
         if buck:                     # high side conducts during D·T
             py = [0.0, i_l(t_on / 2), i_l(DT - t_off / 2), 0.0]

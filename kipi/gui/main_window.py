@@ -29,6 +29,7 @@ from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import classify_nets, sorted_nets
 from kipi.dc.gui.pi_panel import PIPanel
 from kipi.dc.pi.tree import fmt_drop
+from kipi.gui.docks import make_detachable
 from kipi.gui.heartbeat import Heartbeat, busy_cursor
 from kipi.gui.stackup_window import StackupWindow
 from kipi.gui.tooltip_art import art_tip
@@ -177,20 +178,24 @@ class MainWindow(QMainWindow):
         self._asking_reload = False
         self._own_write_until = 0.0         # changes before this are KiPI's own saves
 
-        # The central area: the 3D view and, in AC mode, the impedance plot and the board
-        # map of the solve (#67); in Coupled Noise mode, the aggressor's waveforms (#69).
+        # The central area: the 3D view and, in AC mode, the impedance plot, the board map
+        # of the solve (#67) and the estimated transient (#166); in Coupled Noise mode, the
+        # aggressor's waveforms (#69).
         from kipi.ac.gui.board_map import BoardMap
         from kipi.ac.gui.plot import ImpedancePlot
+        from kipi.ac.gui.transient_plot import TransientPlot
         from kipi.noise.gui.plot import NoisePlot
         self.views = QTabWidget(self)
         self.views.setDocumentMode(True)
         self.viewer = Viewer3D(self.views)
         self.plot = ImpedancePlot(self.views)
         self.board_map = BoardMap(self.views)
+        self.transient_plot = TransientPlot(self.views)
         self.noise_plot = NoisePlot(self.views)
         self.views.addTab(self.viewer, "3D view")
         self.views.addTab(self.plot, "Impedance")
         self.views.addTab(self.board_map, "Board map")
+        self.views.addTab(self.transient_plot, "Transient")
         self.views.addTab(self.noise_plot, "Waveforms")
         self.setCentralWidget(self.views)
         self.viewer.on_click(self._on_click)
@@ -381,11 +386,11 @@ class MainWindow(QMainWindow):
             KEYS["results"]))
 
     def _set_plot_tabs(self, mode: str):
-        """Show each mode's plot tabs only in that mode: the impedance and board map in AC
-        mode, the waveforms in Coupled Noise mode. QTabWidget.setTabVisible needs Qt 5.15;
+        """Show each mode's plot tabs only in that mode: the impedance, board map and
+        transient in AC mode, the waveforms in Coupled Noise mode. QTabWidget.setTabVisible needs Qt 5.15;
         older Qt disables the tabs instead."""
         tabs = {self.plot: mode == "ac", self.board_map: mode == "ac",
-                self.noise_plot: mode == "noise"}
+                self.transient_plot: mode == "ac", self.noise_plot: mode == "noise"}
         for w, shown in tabs.items():
             i = self.views.indexOf(w)
             if hasattr(self.views, "setTabVisible"):
@@ -563,6 +568,11 @@ class MainWindow(QMainWindow):
                 setattr(self, f"chk_{name}", cb)
         self.chk_models = cb
         self.chk_models.setVisible(self._tool.offers_part_models)
+        self.chk_hide_non_included = QCheckBox("Hide non-simulated copper", g_view)
+        self.chk_hide_non_included.setToolTip(
+            "Show all copper by default. When ticked, show only nets included in the analysis.")
+        self.chk_hide_non_included.toggled.connect(self.viewer.set_hide_non_included)
+        feats.addWidget(self.chk_hide_non_included)
         # Only on request: a guessed model may be the wrong part (#130).
         self.btn_guess = QPushButton("Guess models", g_view)
         self.btn_guess.setToolTip(
@@ -622,6 +632,7 @@ class MainWindow(QMainWindow):
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         dock.setWidget(_scrolling(panel))
         dock.setMinimumWidth(300)
+        make_detachable(dock)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
     def _build_solve_dock(self):
@@ -640,6 +651,7 @@ class MainWindow(QMainWindow):
         self.solve_panel.part_selected.connect(
             lambda *a: self._pi_part_selected(*a) if self.mode == "dc" else None)
         self.solve_panel.export_requested.connect(self._export)
+        self.solve_panel.report_requested.connect(self._dc_report)
         self._tree = None
         self._scenes = {}
         self._shown_group = ""
@@ -647,6 +659,7 @@ class MainWindow(QMainWindow):
         self._saved = None              # the setup as its file has it
         self.ac_panel = ACPanel(self)
         self.ac_panel.solve_requested.connect(self.run_ac_solve)
+        self.ac_panel.report_requested.connect(self._ac_report)
         self.ac_panel.result_selected.connect(self._show_ac_result)
         self.ac_panel.results_saved.connect(lambda path: self.log(f"Saved AC results to {path}"))
         self.ac_panel.part_selected.connect(
@@ -654,6 +667,7 @@ class MainWindow(QMainWindow):
         from kipi.noise.gui.panel import NoisePanel
         self.noise_panel = NoisePanel(self)
         self.noise_panel.solve_requested.connect(self.run_noise_solve)
+        self.noise_panel.report_requested.connect(self._noise_report)
         self.noise_panel.result_selected.connect(self._show_noise_result)
         self.noise_panel.victim_selected.connect(self._show_victim)
         self.noise_panel.coupling_changed.connect(self._show_coupling)
@@ -686,6 +700,7 @@ class MainWindow(QMainWindow):
         dock.setWidget(holder)
         self.solve_dock = dock
         dock.setMinimumWidth(420)
+        make_detachable(dock)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self._result = None
 
@@ -721,6 +736,7 @@ class MainWindow(QMainWindow):
         dock.setObjectName("log_dock")
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         dock.setWidget(w)
+        make_detachable(dock)
         self.addDockWidget(Qt.BottomDockWidgetArea, dock)
         self.resizeDocks([dock], [200], Qt.Vertical)
         self.heartbeat = Heartbeat(self)          # turns while any task runs (#111)
@@ -993,7 +1009,8 @@ class MainWindow(QMainWindow):
     def save_screenshot(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save screenshot", "kipi.png", "PNG (*.png)")
         if path:
-            if self.views.currentWidget() in (self.plot, self.board_map, self.noise_plot):
+            if self.views.currentWidget() in (self.plot, self.board_map, self.transient_plot,
+                                              self.noise_plot):
                 self.views.currentWidget().save_png(path)
             else:
                 self.viewer.screenshot(path)
@@ -1146,6 +1163,7 @@ class MainWindow(QMainWindow):
 
     def _on_net_item_changed(self, item):
         self._checked_cache = None
+        self.viewer.set_included_nets(self._checked_set())
         self._sync_timer.start()
         self._show_unsaved()
 
@@ -1166,25 +1184,25 @@ class MainWindow(QMainWindow):
 
     # ============================================================ scene
     def sync_nets(self):
-        """Make the 3D view match the checked nets.
+        """Keep all board copper in the view and synchronize checked nets to analysis.
 
-        Unchecked nets are removed at once. Newly checked nets are built in the
-        background and added as they finish; the nets already shown are left alone.
+        All net meshes are retained so the geometry view can show context copper;
+        checked nets continue to define each analysis scope.
         """
         if self.snapshot is None:
             return
-        self.solve_panel.set_nets(list(self._checked_set()))
-        self.ac_panel.set_nets(list(self._checked_set()))
-        self.noise_panel.set_nets(list(self._checked_set()))
+        included = self._checked_set()
+        self.viewer.set_included_nets(included)
+        self.solve_panel.set_nets(list(included))
+        self.ac_panel.set_nets(list(included))
+        self.noise_panel.set_nets(list(included))
         self.solve_panel.setup.nets = self._checked_nets()   # saved with the setup
         self._model_timer.start()
         if self._busy():
             self._resync_pending = True
             return
-        wanted = self._checked_nets()
+        wanted = [n.name for n in self.snapshot.nets]
         shown = set(self.viewer.nets())
-        for net in shown - set(wanted):
-            self.viewer.remove_net(net)
         todo = [n for n in wanted if n not in shown]
         if not todo:
             return
@@ -1209,9 +1227,6 @@ class MainWindow(QMainWindow):
         added: List[str] = []
 
         def on_net(ns):
-            # Runs on the UI thread as each net finishes; skip nets unchecked meanwhile.
-            if ns.net not in self._checked_set():
-                return
             if not ns.copper:
                 self.log(f"{ns.net}: no copper on any layer", logging.WARNING)
             self.viewer.add_net(ns, render=False)
@@ -1223,11 +1238,7 @@ class MainWindow(QMainWindow):
             self.viewer.render()
             self.log(f"Added {len(added)} net(s); {len(self.viewer.nets())} net(s) shown")
 
-        task = self._run(work, done, "Building view", on_partial=on_net)
-        if task is not None:
-            # A canceled build leaves its nets unchecked so the list matches the view.
-            task.canceled.connect(lambda: self._set_checked(
-                lambda it: it.data(Qt.UserRole) in self.viewer.nets()))
+        self._run(work, done, "Building view", on_partial=on_net)
 
     # ============================================================ PI Models markers
     def _sync_pi_markers(self):
@@ -1437,6 +1448,7 @@ class MainWindow(QMainWindow):
         self._refresh_power_tree()
         self.plot.clear()
         self.board_map.clear()
+        self.transient_plot.clear()
         self.noise_plot.clear()
         return setup
 
@@ -1521,11 +1533,6 @@ class MainWindow(QMainWindow):
             self.log("Solve queued until the current task finishes")
             return
         frozen = copy.deepcopy(setup)     # edits during the solve don't affect it
-        report_path = None
-        if frozen.html_report and self._setup_path is not None:
-            from kipi.dc.report.html import report_name
-            report_path = self._setup_path.parent / report_name(self._results_stem(),
-                                                                fmt=frozen.report_format)
 
         def work(progress):
             from kipi.core.mesh.mesher import MeshError
@@ -1543,14 +1550,7 @@ class MainWindow(QMainWindow):
                 return None, str(e)       # a setup problem, reported in the panel
             with progress.timed("Building result views"):
                 scenes = build_scenes(tree, snap, progress)
-            if report_path is not None:
-                from kipi.dc.report.html import write_report
-                try:
-                    tree.report_path = write_report_file(
-                        lambda p: write_report(p, tree, scenes, snap, frozen, progress),
-                        report_path, progress)
-                except OSError as e:
-                    progress.warn(f"Could not write the report: {e}")
+            tree.solved_setup = frozen         # what a report of it shows (#185)
             return tree, scenes
 
         def done(out):
@@ -1559,8 +1559,7 @@ class MainWindow(QMainWindow):
                 self.solve_panel.show_error(scenes)
                 return
             self._set_tree(tree, scenes)
-            self.solve_panel.set_report(getattr(tree, "report_path", None))
-            self._open_new_report(getattr(tree, "report_path", None))
+            self.solve_panel.set_report(None)
             first = tree.loads[0].group if tree.loads else next(iter(tree.groups))
             self.solve_panel.show_results(tree, first)
             self._show_group(first)
@@ -1571,8 +1570,83 @@ class MainWindow(QMainWindow):
         if self._run(work, done, "Solving power tree") is not None:
             self.solve_panel.set_busy(True)
 
+    # ------------------------------------------------------------ reports (#185)
+    def _report_setup(self, result, panel):
+        """The setup a report of ``result`` shows: the one it was solved with, or, for
+        results opened from a file, the setup as it is now."""
+        return getattr(result, "solved_setup", None) or copy.deepcopy(panel.setup)
+
+    def _report_path(self, name: str) -> Path:
+        """Where a report goes: next to the setup, else the board."""
+        if self._setup_path is not None:
+            return self._setup_path.parent / name
+        snap = self.snapshot
+        folder = snap.project_dir or (str(Path(snap.file).parent) if snap.file else "")
+        return Path(folder or ".") / name
+
+    def _write_report(self, what: str, write, path: Path, on_written):
+        """In the background, ``write(path, progress)`` a report of the shown results
+        (where a PDF cannot be made, as HTML), then ``on_written(path)`` and open it."""
+        def work(progress):
+            try:
+                return write_report_file(lambda p: write(p, progress), path, progress), None
+            except Exception as e:  # noqa: BLE001 - the results stand without a report
+                return None, f"{type(e).__name__}: {e}"
+
+        def done(out):
+            written, error = out
+            if written is None:
+                self.log(f"Could not write the report: {error}", logging.WARNING)
+                QMessageBox.warning(self, "KiPI", f"Could not write the report:\n{error}")
+                return
+            on_written(written)
+            self._open_new_report(written)
+
+        self._run(work, done, f"Writing the {what} report")
+
+    def _dc_report(self, fmt: str):
+        tree, scenes, snap = self._tree, self._scenes, self.snapshot
+        if tree is None or snap is None:
+            return
+        from kipi.dc.report.html import report_name, write_report
+        setup = self._report_setup(tree, self.solve_panel)
+
+        def written(path):
+            tree.report_path = path
+            self.solve_panel.set_report(path)
+
+        self._write_report("DC", lambda p, progress: write_report(p, tree, scenes, snap, setup,
+                                                                  progress),
+                           self._report_path(report_name(self._results_stem(), fmt=fmt)),
+                           written)
+
+    def _ac_report(self, result, fmt: str):
+        snap = self.snapshot
+        if result is None or snap is None:
+            return
+        from kipi.ac.html_report import report_name, write_ac_report
+        setup = self._report_setup(result, self.ac_panel)
+        self._write_report("AC", lambda p, progress: write_ac_report(p, result, snap, setup,
+                                                                     progress),
+                           self._report_path(report_name(self._results_stem(), result.rail,
+                                                         fmt=fmt)),
+                           lambda path: self.ac_panel.set_report(result, path))
+
+    def _noise_report(self, result, fmt: str):
+        snap = self.snapshot
+        if result is None or snap is None:
+            return
+        from kipi.noise.html_report import report_name, write_noise_report
+        setup = self._report_setup(result, self.noise_panel)
+        self._write_report("Coupled Noise",
+                           lambda p, progress: write_noise_report(p, result, snap, setup,
+                                                                  progress),
+                           self._report_path(report_name(self._results_stem(),
+                                                         result.aggressor, fmt=fmt)),
+                           lambda path: self.noise_panel.set_report(result, str(path)))
+
     def _open_new_report(self, path):
-        """Open a report a solve just wrote in the default browser."""
+        """Open a report just written in the default browser."""
         if path is None:
             return
         from kipi.gui.browser import open_in_browser
@@ -1593,11 +1667,6 @@ class MainWindow(QMainWindow):
             return
         frozen = copy.deepcopy(setup)
         dc_result = self._tree       # the last DC solve gives the capacitors' DC bias (#74)
-        report_path = None
-        if frozen.ac.html_report and self._setup_path is not None:
-            from kipi.ac.html_report import report_name
-            report_path = self._setup_path.parent / report_name(self._results_stem(), vrm_name,
-                                                                fmt=frozen.ac.report_format)
 
         def work(progress):
             from kipi.ac.solver import ACError, solve_ac
@@ -1608,14 +1677,7 @@ class MainWindow(QMainWindow):
             except (ACError, MeshError, SolveError) as e:
                 progress.warn(str(e))
                 return None, str(e)
-            if report_path is not None:
-                from kipi.ac.html_report import write_ac_report
-                try:
-                    result.report_path = write_report_file(
-                        lambda p: write_ac_report(p, result, snap, frozen, progress),
-                        report_path, progress)
-                except Exception as e:        # the solve's results stand without it
-                    progress.warn(f"Could not write the report: {type(e).__name__}: {e}")
+            result.solved_setup = frozen     # what a report of it shows (#185)
             return result, None
 
         def done(out):
@@ -1624,7 +1686,6 @@ class MainWindow(QMainWindow):
                 self.ac_panel.show_error(error)
                 return
             self.ac_panel.show_result(result)
-            self._open_new_report(getattr(result, "report_path", None))
 
         def partial(board_map):
             """The solve's board map as it fills: shown while the rail solves."""
@@ -1642,8 +1703,10 @@ class MainWindow(QMainWindow):
         if result is None:
             self.plot.clear()
             self.board_map.clear()
+            self.transient_plot.clear()
             return
         self.plot.set_result(result)
+        self.transient_plot.set_result(result)
         if self.board_map.board_map is not getattr(result, "board_map", None):
             self.board_map.set_map(getattr(result, "board_map", None))  # None: saved before 0.7.2
         self.views.setCurrentWidget(self.plot)
@@ -1659,11 +1722,6 @@ class MainWindow(QMainWindow):
             self.log("Coupled Noise solve queued until the current task finishes")
             return
         frozen = copy.deepcopy(setup)
-        report_path = None
-        if frozen.noise.html_report and self._setup_path is not None:
-            from kipi.noise.html_report import report_name
-            report_path = self._setup_path.parent / report_name(
-                self._results_stem(), aggressor, fmt=frozen.noise.report_format)
 
         def work(progress):
             from kipi.noise.checks import NoiseError
@@ -1673,14 +1731,7 @@ class MainWindow(QMainWindow):
             except NoiseError as e:
                 progress.warn(str(e))
                 return None, str(e)
-            if report_path is not None:
-                from kipi.noise.html_report import write_noise_report
-                try:
-                    result.report_path = str(write_report_file(
-                        lambda p: write_noise_report(p, result, snap, frozen, progress),
-                        report_path, progress))
-                except Exception as e:        # the solve's results stand without it
-                    progress.warn(f"Could not write the report: {type(e).__name__}: {e}")
+            result.solved_setup = frozen     # what a report of it shows (#185)
             return result, None
 
         def done(out):
@@ -1689,7 +1740,6 @@ class MainWindow(QMainWindow):
                 self.noise_panel.show_error(error)
                 return
             self.noise_panel.show_result(result)
-            self._open_new_report(getattr(result, "report_path", "") or None)
 
         def partial(result):
             """The waveforms, shown while the coupling solves."""
@@ -2072,7 +2122,7 @@ class MainWindow(QMainWindow):
             f"{rows}</table><br><i>Left-click copper in the 3D view to identify it.</i>")
 
     def _probe_deviation(self, dv: float, v_ref: float) -> str:
-        """A probed point against its reference: drop or boost from a rail's set point, or
+        """A probed point against its reference: drop or boost from a rail's target voltage, or
         how far a ground sits from its 0 V reference."""
         group = self._tree.groups.get(self.viewer.result.net) if self._tree else None
         if group is not None and group.kind == "ground":

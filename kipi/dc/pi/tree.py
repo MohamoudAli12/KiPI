@@ -8,11 +8,11 @@ output delivers, and its input pins are a load on the group feeding it.
 * Switcher:  I_in = V_out * I_out / (efficiency * V_in) + I_q, where V_in is the voltage
              at the VRM's input pins, which depends on I_in, so the feeding group is
              iterated to a fixed point (the factorized system is reused).
-* Remote sense: the VRM's output is corrected until the sense pins sit at the set point.
-  With ground sense, the set point is held above the ground sense pins instead of 0 V;
+* Remote sense: the VRM's output is corrected until the sense pins sit at the target voltage.
+  With ground sense, the target voltage is held above the ground sense pins instead of 0 V;
   their voltage comes from the ground solve, so rails and grounds are iterated together.
-* Mesh remote sense (#93): every sense point's pins are a voltage boundary at the set
-  point (less the load line, above that point's ground sense pins); the VRM's current
+* Mesh remote sense (#93): every sense point's pins are a voltage boundary at the target
+  voltage (less the load line, above that point's ground sense pins); the VRM's current
   enters there, split evenly over its phases, and its output pins only measure.
 * Ground: groups used as ground are referenced to 0 V at the source VRM's ground pins.
   Loads return their current at their ground pins; every other VRM returns
@@ -35,7 +35,7 @@ ground pin connected, its current is left out and it shows as disconnected. The 
 list every unconnected pin. A rail with loads but none of them connected stops the solve.
 
 After the solve each VRM's input is checked against its dropout and input range. A VRM
-that cannot hold its set point fails every load it feeds, directly or downstream; a
+that cannot hold its target voltage fails every load it feeds, directly or downstream; a
 group whose iteration did not converge leaves its loads unjudged.
 
 Excluded nets: only the net groups kept by :func:`~kipi.dc.pi.model.active_setup` are
@@ -278,7 +278,8 @@ class _TreeSolver:
 
     # ------------------------------------------------------------ systems
     def _links_in(self, g: Group) -> List[SeriesLink]:
-        return [SeriesLink(k.name, self.pads(k.side_a), self.pads(k.side_b), k.resistance)
+        return [SeriesLink(k.name, self.pads(k.side_a), self.pads(k.side_b), k.resistance,
+                           k.diode_vf)
                 for k in self.setup.links if k.side_a.net in g]
 
     def _system_for(self, g: Group, sources, loads, label):
@@ -417,8 +418,8 @@ class _TreeSolver:
                       warnings: List[str]):
         """Fixed point of the rail: VRM input currents downstream depend on the voltage at
         their input pins, and remote sense (or a multi-phase VRM's mean output) moves the
-        output until the regulated pins sit at the set point. Returns (solution, applied
-        voltage, input voltages, currents, iterations). A load line moves the set point
+        output until the regulated pins sit at the target voltage. Returns (solution, applied
+        voltage, input voltages, currents, iterations). A load line moves the target voltage
         down by R_LL times the output current."""
         vrm = rail.vrm
         set_point = vrm.voltage + self.v_gsense.get(vrm.name, 0.0)
@@ -459,8 +460,8 @@ class _TreeSolver:
 
     def _iterate_mesh(self, rail: _Rail, system, demand: float, label: str,
                       warnings: List[str]):
-        """The rail's fixed point with mesh sense: every sense point is held at the set
-        point less the droop, above its own ground sense pins; only the VRM input currents
+        """The rail's fixed point with mesh sense: every sense point is held at the target
+        voltage less the droop, above its own ground sense pins; only the VRM input currents
         downstream and the droop move. Returns as :meth:`_iterate_rail`."""
         vrm = rail.vrm
         r_ll = vrm.load_line_mohm * 1e-3
@@ -610,7 +611,7 @@ class _TreeSolver:
         not_converged_labels = {self.label_of(g) for g in self.not_converged}
         set_point = {v.name: v.voltage for v in self.setup.vrms}
         for label, nets, kind, drv, mesh, sol, it in solved:
-            # Drop and boost on a rail are measured from its VRM's set point, not from the
+            # Drop and boost on a rail are measured from its VRM's target voltage, not the
             # output pins (which remote sense moves); grounds from their 0 V reference.
             ref = set_point[drv] if kind == "rail" else 0.0
             out.groups[label] = GroupResult(label, nets, kind, drv,
@@ -628,7 +629,7 @@ class _TreeSolver:
 
     # ------------------------------------------------------------ checks and reports
     def _regulation(self, v: Vrm) -> str:
-        """Why the VRM cannot hold its set point at the solved input voltage ("" if it can).
+        """Why the VRM cannot hold its target voltage at the solved input voltage ("" if it can).
         A multi-phase VRM is judged on its worst phase."""
         if not v.input:
             return ""
