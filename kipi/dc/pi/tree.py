@@ -8,6 +8,7 @@ output delivers, and its input pins are a load on the group feeding it.
 * Switcher:  I_in = V_out * I_out / (efficiency * V_in) + I_q, where V_in is the voltage
              at the VRM's input pins, which depends on I_in, so the feeding group is
              iterated to a fixed point (the factorized system is reused).
+* Isolated:  as a switcher, but its output side has its own ground (#170).
 * Remote sense: the VRM's output is corrected until the sense pins sit at the target voltage.
   With ground sense, the target voltage is held above the ground sense pins instead of 0 V;
   their voltage comes from the ground solve, so rails and grounds are iterated together.
@@ -16,7 +17,9 @@ output delivers, and its input pins are a load on the group feeding it.
   enters there, split evenly over its phases, and its output pins only measure.
 * Ground: groups used as ground are referenced to 0 V at the source VRM's ground pins.
   Loads return their current at their ground pins; every other VRM returns
-  I_in - I_out at its ground pins.
+  I_in - I_out at its ground pins. An isolated converter's output ground pins are the
+  0 V reference of the ground on its output side, and its input current returns at its
+  input ground pins, on the ground of the side feeding it.
 * Multi-phase VRMs: every phase carries I_out / N. Phase 1's output pins hold the VRM's
   output voltage; phases 2..N inject their share, so each phase settles at whatever
   voltage its copper gives it. The VRM regulates its sense pins or, without them, the
@@ -44,6 +47,7 @@ solved; its notes on what was left out become warnings.
 
 from __future__ import annotations
 
+import functools
 import math
 import time
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -53,7 +57,8 @@ import numpy as np
 from kipi.core.mesh.mesher import mesh_nets
 from kipi.core.model.board import BoardSnapshot
 from kipi.dc.pi.model import (
-    Load, PISetup, PinRef, Vrm, active_setup, net_groups, validate, vin_range,
+    GROUND_REF_KINDS, SWITCHING_KINDS, Load, PISetup, PinRef, Vrm, active_setup, net_groups,
+    validate, vin_range, warmed_link,
 )
 from kipi.dc.pi.results import (  # also importable from here, where they were defined
     DISCONNECTED,
@@ -87,6 +92,16 @@ class _Pads:
         return [p.id for p in pads_for(self.snap, ref.net, ref.ref, ref.pins or None)]
 
 
+def _two_point(gmat: np.ndarray) -> float:
+    """The resistance between the first two nodes of conductance matrix ``gmat`` (0 for
+    one node: a short)."""
+    if len(gmat) < 2:
+        return 0.0
+    e = np.zeros(len(gmat))
+    e[:2] = 1.0, -1.0
+    return float(max(e @ np.linalg.pinv(gmat) @ e, 0.0))
+
+
 def _pad_voltages(sol, pad_ids: List[str]) -> np.ndarray:
     return np.array([sol.node_v[next(iter(sol.mesh.pad_nodes[p].values()))[0]]
                      for p in pad_ids])
@@ -117,7 +132,7 @@ def _input_current(v: Vrm, v_out: float, i_out: float, v_in: float) -> float:
     iq = v.quiescent_a / (len(v.phases) + 1)
     if v.kind == "ldo":
         return i_out + iq
-    if v.kind == "smps":
+    if v.kind in SWITCHING_KINDS:
         if v_in <= 0:
             raise SolveError(f"VRM {v.name}: input voltage collapsed to {v_in:.3f} V")
         return v_out * i_out / (v.efficiency * v_in) + iq
@@ -265,10 +280,14 @@ class _TreeSolver:
     def _ground_groups(self) -> List[Group]:
         out: List[Group] = []
         refs = [v.ground for v in self.setup.vrms] + [l.ground for l in self.setup.loads]
+        refs += [v.input_ground for v in self._isolated()]
         for ref in refs:
             if ref and self.groups[ref.net] not in out:
                 out.append(self.groups[ref.net])
         return out
+
+    def _isolated(self) -> List[Vrm]:
+        return [v for v in self.setup.vrms if v.kind == "isolated"]
 
     def _fed_from(self, g: Group) -> Iterator[Group]:
         """``g`` and every group powered through it."""
@@ -278,9 +297,29 @@ class _TreeSolver:
 
     # ------------------------------------------------------------ systems
     def _links_in(self, g: Group) -> List[SeriesLink]:
-        return [SeriesLink(k.name, self.pads(k.side_a), self.pads(k.side_b), k.resistance,
-                           k.diode_vf)
-                for k in self.setup.links if k.side_a.net in g]
+        out = []
+        for k in self.setup.links:
+            if not any(p.net in g for p in k.sides):
+                continue
+            k = warmed_link(self.snap, k, self.pads, self.temperature)
+            if not k.is_multi:
+                curve = (functools.partial(k.spice.dc_current, temp_c=k.temp_c)
+                         if k.is_diode else None)
+                out.append(SeriesLink(k.name, self.pads(k.side_a), self.pads(k.side_b),
+                                      k.dc_resistance(), curve=curve))
+                continue
+            # A multi-pin part (#193): each piece of it joining sides on these nets, by
+            # its conductance matrix (a common-mode choke's windings are on two rails).
+            blocks = k.dc_blocks()
+            for groups, gmat in blocks:
+                if groups[0][0].net not in g:
+                    continue
+                pads = [[pid for p in group for pid in self.pads(p)] for group in groups]
+                name = k.name if len(blocks) == 1 else \
+                    f"{k.name} ({' ↔ '.join(p.net for group in groups for p in group)})"
+                out.append(SeriesLink(name, pads[0], pads[min(1, len(pads) - 1)],
+                                      _two_point(gmat), groups=pads, conductance=gmat))
+        return out
 
     def _system_for(self, g: Group, sources, loads, label):
         """Mesh and factorize a group once; later passes only re-solve."""
@@ -321,7 +360,7 @@ class _TreeSolver:
     def _ground_system(self, g: Group):
         """The ground's reference VRMs and its (mesh, system)."""
         refs = [v for v in self.setup.vrms
-                if v.kind == "source" and v.ground and v.ground.net in g]
+                if v.kind in GROUND_REF_KINDS and v.ground and v.ground.net in g]
         sources = [VoltageSource(f"{v.name} (gnd)", self.pads(v.ground), 0.0) for v in refs]
         loads = [CurrentLoad(f"{l.name} (return)", self.pads(l.ground), -l.total_current(),
                              optional=True)
@@ -529,7 +568,7 @@ class _TreeSolver:
         """(VRM, 0-based phase, phase) for every non-reference VRM phase grounded in g."""
         for v in self.setup.vrms:
             for k, ph in enumerate(v.all_phases() if v.ground and v.ground.net in g else []):
-                if not (v.kind == "source" and k == 0):      # not the 0 V reference
+                if not (v.kind in GROUND_REF_KINDS and k == 0):  # not the 0 V reference
                     yield v, k, ph
 
     def _vrm_ground_loads(self, g: Group) -> List[CurrentLoad]:
@@ -541,6 +580,8 @@ class _TreeSolver:
                   for v in self.setup.vrms if v.mesh_sense
                   for k, sp in enumerate(v.all_sense_points()[1:], 2)
                   if sp.ground_sense and sp.ground_sense.net in g]
+        loads += [CurrentLoad(f"{v.name} (input gnd)", self.pads(v.input_ground), 0.0)
+                  for v in self._isolated() if v.input_ground and v.input_ground.net in g]
         return loads
 
     def _vrm_ground_returns(self, g: Group) -> Dict[str, float]:
@@ -550,6 +591,9 @@ class _TreeSolver:
         for v, k, _ in self._vrm_ground_phases(g):
             i_back = self.i_in[v.name][k] if v.name in self.i_in else 0.0
             currents[_term(v, "gnd", k + 1)] = self.i_out[v.name][k] - i_back
+        for v in self._isolated():           # its input current, back to its own source
+            if v.input_ground and v.input_ground.net in g:
+                currents[f"{v.name} (input gnd)"] = -sum(self.i_in.get(v.name, [0.0]))
         return currents
 
     def _solve_ground(self, g: Group, suffix: str, warnings: List[str]):

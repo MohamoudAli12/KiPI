@@ -9,7 +9,9 @@ what the user kept, and nothing is inferred at solve time:
 * **VRMs** drive one group from their output pins. A group may have only one VRM.
   A VRM's input pins (LDO / switcher) make it a load on the group feeding it; that is
   how the power tree is defined. A multi-phase VRM has output, input and ground pins
-  per phase; the phases share its output current equally.
+  per phase; the phases share its output current equally. An isolated converter (#170)
+  is a switcher whose output ground is its own: its output ground pins are that ground's
+  0 V reference, and its input current returns through its input ground pins.
 * **Loads** draw a current from their supply pins, optionally returning it through
   ground pins.
 * **Excluded nets** leave their net groups out of the DC solve (see :func:`active_setup`),
@@ -34,10 +36,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+
 from kipi.ac.model import (
     DEFAULT_KEPT_AT_RATED_PCT, ACSettings, CapModel, PackageModel, Probe, report_format,
 )
-from kipi.core.model.spice import SpiceRef
+from kipi.core.model.spice import SpiceRef, constant_drop_ref
 from kipi.dc.solver.setup import SHORT_OHMS, SolveSettings
 from kipi.dc.thermal.model import ThermalSettings
 from kipi.noise.model import (
@@ -46,7 +50,10 @@ from kipi.noise.model import (
 )
 
 FORMAT_VERSION = 2
-VRM_KINDS = ("source", "ldo", "smps")
+VRM_KINDS = ("source", "ldo", "smps", "isolated")
+SWITCHING_KINDS = ("smps", "isolated")      # input power = output power / efficiency
+REGULATOR_KINDS = ("ldo", "smps", "isolated")   # VRMs with input pins
+GROUND_REF_KINDS = ("source", "isolated")   # their ground pins hold that ground at 0 V
 DEFAULT_BANDWIDTH_KHZ = 50.0
 
 
@@ -82,12 +89,15 @@ class Vrm:
     name: str
     output: PinRef                       # phase 1's pins: output, input, ground
     voltage: float
-    kind: str = "source"                 # "source" (ideal supply), "ldo", "smps"
+    kind: str = "source"                 # "source" (ideal supply), "ldo", "smps", "isolated"
     efficiency: float = 0.9              # switchers: P_in = P_out / efficiency
     quiescent_a: float = 0.0             # extra input current (LDO / switcher)
     input: Optional[PinRef] = None       # required for "ldo" and "smps"
     sense: Optional[PinRef] = None       # remote sense: regulate the voltage here
     ground: Optional[PinRef] = None      # ground pins (enables ground-net simulation)
+    # Isolated converters only (#170): the input side's ground pins, where its input
+    # current returns; ``ground`` is then its output side's ground, which it references.
+    input_ground: Optional[PinRef] = None
     ground_sense: Optional[PinRef] = None  # negative remote sense: regulate against these
     # Phases 2..N of a multi-phase VRM (empty = single phase). Each phase carries
     # 1/N of the output current; sense and ground sense are shared by all phases.
@@ -136,7 +146,13 @@ class Vrm:
         refs = [r for sp in self.all_sense_points() for r in (sp.sense, sp.ground_sense)]
         for ph in self.all_phases():
             refs.extend((ph.output, ph.input, ph.ground))
+        refs.append(self.input_ground)
         return [r for r in refs if r]
+
+    def input_return(self, ph: VrmPhase) -> Optional[PinRef]:
+        """The ground pins phase ``ph``'s input current returns through: an isolated
+        converter's input ground pins, any other VRM's ground pins."""
+        return self.input_ground if self.kind == "isolated" else ph.ground
 
     def has_accuracy(self) -> bool:
         return self.acc_min is not None or self.acc_max is not None
@@ -298,20 +314,78 @@ class DcLink:
     side_b: PinRef
     resistance: float                       # ohms; 0 = short (DC and AC)
     esl_h: Optional[float] = None           # series inductance, henries (AC only)
-    diode_vf: float = 0.0                   # DC forward drop, side A (anode) -> side B
     # The part's SPICE model (#51): with it in use, AC takes the impedance from it, and
-    # the resistance and ESL are fitted to it.
+    # the resistance and ESL are fitted to it. A diode's model (#191) also gives DC its
+    # current at each voltage; side A is its anode.
     spice: Optional[SpiceRef] = None
+    # A multi-pin part's sides after side A and side B (#193), one per pin of its SPICE
+    # model in order; only a model import sets them. Without the model in use, the part
+    # is its RLC values between side A and side B.
+    more_sides: List[PinRef] = field(default_factory=list)
+    # The DC current a diode's small-signal impedance is taken at, side A to side B: set
+    # for an AC or Coupled Noise solve (see biased_link), never saved.
+    bias_a: Optional[float] = None
+    # The part's temperature, °C, its SPICE model is worked out at (#196): the copper's
+    # under its pads, set by a solve that knows it; None: the model's nominal. Never saved.
+    temp_c: Optional[float] = None
 
     @property
     def uses_spice(self) -> bool:
         return self.spice is not None and self.spice.use
 
+    @property
+    def is_diode(self) -> bool:
+        """Whether the part is a diode's SPICE model, in use."""
+        return self.uses_spice and self.spice.has_diodes
+
+    @property
+    def is_multi(self) -> bool:
+        """Whether the part is a multi-pin SPICE model, in use, with a side per pin."""
+        return (self.uses_spice and bool(self.more_sides)
+                and self.spice.pins == 2 + len(self.more_sides))
+
+    @property
+    def sides(self) -> List[PinRef]:
+        """The sides the solves join: side A and side B, and a multi-pin part's others."""
+        return [self.side_a, self.side_b, *(self.more_sides if self.is_multi else ())]
+
+    def dc_blocks(self) -> List[Tuple[List[List[PinRef]], np.ndarray]]:
+        """A multi-pin part at DC: each piece joining sides, as (its sides in groups
+        shorted together, the conductance matrix between the groups)."""
+        sides = self.sides
+        return [([[sides[i] for i in g] for g in groups], gmat)
+                for groups, gmat in self.spice.dc_blocks(self.temp_c)]
+
+    def joins(self) -> List[Tuple[str, str]]:
+        """The nets the part joins at DC, in pairs: side A's and side B's, or a multi-pin
+        part's within each piece (a common-mode choke's windings are apart)."""
+        if not self.is_multi:
+            return [(self.side_a.net, self.side_b.net)]
+        out = []
+        for groups, _g in self.dc_blocks():
+            nets = [p.net for group in groups for p in group]
+            out += [(nets[0], n) for n in nets[1:]]
+        return out
+
+    def dc_resistance(self) -> float:
+        """The resistance DC solves the part with: its SPICE model's at ``temp_c`` (#196)
+        when it has one in use and is warmed, else ``resistance`` (the model's, fitted at
+        its nominal temperature)."""
+        if self.uses_spice and self.temp_c is not None and not self.is_diode:
+            r = self.spice.dc_resistance(self.temp_c)
+            if r is not None and r >= 0:
+                return float(r)
+        return self.resistance
+
     def impedance(self, omega):
         """Small-signal impedance at angular frequency ``omega`` (an array)."""
         if self.uses_spice:
-            return self.spice.impedance(omega)
+            return self.spice.impedance(omega, bias_a=self.bias_a or 0.0, temp_c=self.temp_c)
         return self.resistance + 1j * omega * (self.esl_h or 0.0) + 0 * omega
+
+    def admittance(self, omega) -> np.ndarray:
+        """A multi-pin part's admittance between its sides, (F, N, N)."""
+        return self.spice.admittance(omega, self.temp_c)
 
     def is_short(self) -> bool:
         """Whether the part is a short in AC as in DC (merged away)."""
@@ -358,7 +432,7 @@ class PISetup:
         """Nets the VRMs, loads, series links and probes have pins on."""
         refs = [r for v in self.vrms for r in v.pin_refs()]
         refs += [r for ld in self.loads for r in (ld.supply, ld.ground) if r]
-        refs += [r for k in self.links for r in (k.side_a, k.side_b) if r]
+        refs += [r for k in self.links for r in (k.side_a, k.side_b, *k.more_sides) if r]
         refs += [r for p in self.probes for r in (p.rail, p.ground) if r]
         refs += self._aggressor_pins()
         return {r.net for r in refs}
@@ -367,7 +441,7 @@ class PISetup:
         """Footprints given a model: VRMs, loads, series links, capacitor and package models."""
         refs = [r for v in self.vrms for r in v.pin_refs()]
         refs += [r for ld in self.loads for r in (ld.supply, ld.ground) if r]
-        refs += [r for k in self.links for r in (k.side_a, k.side_b) if r]
+        refs += [r for k in self.links for r in (k.side_a, k.side_b, *k.more_sides) if r]
         refs += self._aggressor_pins()
         out = {r.ref for r in refs} | {ref for m in self.caps for ref in m.refs}
         out |= {ph.inductor for a in self.aggressors for ph in a.phases}
@@ -384,6 +458,11 @@ class PISetup:
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d.pop("legacy_laminate_k")
+        for k in d["links"]:
+            k.pop("bias_a")
+            k.pop("temp_c")
+        for m in d["caps"]:
+            m.pop("temp_c")
         d["format_version"] = FORMAT_VERSION
         return d
 
@@ -402,6 +481,7 @@ class PISetup:
                       quiescent_a=v.get("quiescent_a", 0.0), input=pin(v.get("input")),
                       sense=pin(v.get("sense")), ground=pin(v.get("ground")),
                       ground_sense=pin(v.get("ground_sense")),
+                      input_ground=pin(v.get("input_ground")),
                       phases=[VrmPhase(pin(ph["output"]), pin(ph.get("input")),
                                        pin(ph.get("ground"))) for ph in v.get("phases", [])],
                       current_limit_a=v.get("current_limit_a"),
@@ -422,11 +502,7 @@ class PISetup:
                         groups=[PinGroup(list(g["pins"]), g["current"], g.get("name", ""))
                                 for g in l.get("groups", [])])
                    for l in d.get("loads", [])],
-            links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
-                          resistance=k["resistance"], esl_h=k.get("esl_h"),
-                          diode_vf=k.get("diode_vf", 0.0),
-                          spice=SpiceRef.from_dict(k.get("spice")))
-                   for k in d.get("links", [])],
+            links=[_link(k, pin) for k in d.get("links", [])],
             via_current_limit_a=d.get("via_current_limit_a", DEFAULT_VIA_CURRENT_LIMIT_A),
             thermal=ThermalSettings(**{k: v for k, v in d.get("thermal", {}).items()
                                        if k in {f.name for f in dataclasses.fields(ThermalSettings)}}),
@@ -545,6 +621,67 @@ def _load_tolerance(d: dict) -> dict:
     return out if t is None else {**out, "tol_min": -t, "tol_max": t}
 
 
+def _link(k: dict, pin) -> DcLink:
+    link = DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
+                  resistance=k["resistance"], esl_h=k.get("esl_h"),
+                  spice=SpiceRef.from_dict(k.get("spice")),
+                  more_sides=[pin(x) for x in k.get("more_sides") or []])
+    # 0.9.2's constant forward drop (#161) becomes a diode model with that drop (#191).
+    vf = float(k.get("diode_vf") or 0.0)
+    if vf > 0 and link.spice is None and link.resistance > 0:
+        link.spice = constant_drop_ref(vf, link.resistance)
+        link.resistance = link.spice.values["resistance"]
+    return link
+
+
+def link_bias(setup: PISetup, link: DcLink) -> float:
+    """An estimate of the DC current through ``link`` from side A to side B, at nominal
+    voltages and without copper losses: what the loads and VRM inputs on side B's nets
+    draw (the nets joined to side B by parts other than diodes and ``link``). Nothing if
+    a VRM drives side B: the diode is taken to block."""
+    stop = {id(link)} | {id(k) for k in setup.links if k.is_diode}
+    joins = [j for k in setup.links if id(k) not in stop for j in k.joins()]
+    side, todo = {link.side_b.net}, [link.side_b.net]
+    while todo:
+        n = todo.pop()
+        for a, b in joins:
+            other = b if a == n else a if b == n else None
+            if other is not None and other not in side:
+                side.add(other)
+                todo.append(other)
+    if any(v.output.net in side for v in setup.vrms):
+        return 0.0
+    groups = net_groups(setup)
+    amps = sum(l.total_current() for l in setup.loads if l.supply.net in side)
+    amps += sum(_estimated_input(setup, groups, v) for v in setup.vrms
+                if v.input and v.input.net in side)
+    return float(amps)
+
+
+def biased_link(setup: PISetup, link: DcLink,
+                solved: Optional[Dict[str, float]] = None) -> DcLink:
+    """``link`` for an AC or Coupled Noise solve: a diode biased by the current the last
+    DC solve found through it (``solved``, by link name, from
+    :func:`kipi.ac.bias.dc_link_currents`), else by :func:`link_bias`'s estimate."""
+    if not link.is_diode:
+        return link
+    if solved and link.name in solved:
+        return dataclasses.replace(link, bias_a=max(float(solved[link.name]), 0.0))
+    return dataclasses.replace(link, bias_a=link_bias(setup, link))
+
+
+def warmed_link(snap, link: DcLink, pads, temperature) -> DcLink:
+    """``link`` with its SPICE model at the copper's temperature under it (#196): the mean
+    over its sides' pads (``pads`` maps a PinRef to pad ids) of ``temperature``, a copper
+    temperature (:mod:`kipi.core.temperature`). Unchanged without either."""
+    if not link.uses_spice or temperature is None or snap is None:
+        return link
+    from kipi.core.temperature import of_pads
+    ids = {pid for p in link.sides for pid in pads(p)}
+    t = of_pads(temperature, [p for p in snap.pads if p.id in ids])
+    return link if t is None else dataclasses.replace(link, temp_c=t)
+
+
 def net_groups(setup: PISetup, extra_nets=()) -> Dict[str, frozenset]:
     """Map every net mentioned in the setup to its group (nets joined by series links)."""
     parent: Dict[str, str] = {}
@@ -567,8 +704,9 @@ def net_groups(setup: PISetup, extra_nets=()) -> Dict[str, frozenset]:
         if l.ground:
             nets.add(l.ground.net)
     for k in setup.links:
-        nets.update((k.side_a.net, k.side_b.net))
-        union(k.side_a.net, k.side_b.net)
+        nets.update(p.net for p in k.sides)
+        for a, b in k.joins():
+            union(a, b)
     groups: Dict[str, set] = {}
     for n in nets:
         groups.setdefault(find(n), set()).add(n)
@@ -617,7 +755,7 @@ def _phase_errors(v: Vrm, groups) -> List[str]:
         if groups[ph.output.net] != groups[v.output.net]:
             errors.append(f"VRM {v.name}: phase {i} output must be on the same rail as "
                           "phase 1")
-        if v.kind in ("ldo", "smps") and ph.input is None:
+        if v.kind in REGULATOR_KINDS and ph.input is None:
             errors.append(f"VRM {v.name}: phase {i} needs its input pins set")
         elif ph.input and v.input and groups[ph.input.net] != groups[v.input.net]:
             errors.append(f"VRM {v.name}: phase {i} input must be on the same rail as "
@@ -638,6 +776,19 @@ def _phase_errors(v: Vrm, groups) -> List[str]:
     return errors
 
 
+def _isolated_errors(v: Vrm, groups) -> List[str]:
+    errors: List[str] = []
+    if v.phases:
+        errors.append(f"VRM {v.name}: an isolated converter has one phase")
+    if v.input_ground and v.ground and groups[v.input_ground.net] == groups[v.ground.net]:
+        errors.append(f"VRM {v.name}: its input and output grounds are joined "
+                      f"({group_name(groups[v.ground.net])}), so it is not isolated; make "
+                      "it a switcher, or pick the output side's ground pins")
+    if v.input_ground and v.input and groups[v.input_ground.net] == groups[v.input.net]:
+        errors.append(f"VRM {v.name}: its input ground pins are on its input rail")
+    return errors
+
+
 def validate(setup: PISetup) -> List[str]:
     """Problems that make the setup unsolvable (empty list = OK)."""
     errors: List[str] = []
@@ -655,10 +806,11 @@ def validate(setup: PISetup) -> List[str]:
         by_group.setdefault(groups[v.output.net], []).append(v.name)
         if v.kind not in VRM_KINDS:
             errors.append(f"VRM {v.name}: unknown type {v.kind!r}")
-        if v.kind in ("ldo", "smps") and v.input is None:
-            errors.append(f"VRM {v.name}: an {v.kind.upper()} needs its input pins set "
+        if v.kind in REGULATOR_KINDS and v.input is None:
+            what = {"ldo": "an LDO", "smps": "a switcher", "isolated": "an isolated converter"}
+            errors.append(f"VRM {v.name}: {what[v.kind]} needs its input pins set "
                           "(that is what connects it into the power tree)")
-        if v.kind == "smps" and not (0 < v.efficiency <= 1):
+        if v.kind in SWITCHING_KINDS and not (0 < v.efficiency <= 1):
             errors.append(f"VRM {v.name}: efficiency must be between 0 and 1")
         if v.current_limit_a is not None and not v.current_limit_a > 0:
             errors.append(f"VRM {v.name}: the output current limit must be positive")
@@ -696,6 +848,10 @@ def validate(setup: PISetup) -> List[str]:
             errors.append(f"VRM {v.name}: input and output are on the same net group")
         if v.ground:
             ground_groups.add(groups[v.ground.net])
+        if v.kind == "isolated":
+            errors.extend(_isolated_errors(v, groups))
+            if v.input_ground:
+                ground_groups.add(groups[v.input_ground.net])
         errors.extend(_phase_errors(v, groups))
     for g, vs in by_group.items():
         if len(vs) > 1:
@@ -734,18 +890,15 @@ def validate(setup: PISetup) -> List[str]:
     for k in setup.links:
         if k.resistance < 0:
             errors.append(f"DC connection {k.name}: resistance cannot be negative")
-        if k.diode_vf < 0:
-            errors.append(f"Diode {k.name}: forward voltage cannot be negative")
-        if k.diode_vf and k.resistance == 0:
-            errors.append(f"Diode {k.name}: enter a nonzero series resistance")
     for g in ground_groups:
         if g in rail_groups:
             errors.append(f"{group_name(g)} is used both as a supply and as ground")
-        if not any(v.kind == "source" and v.ground and groups[v.ground.net] == g
+        if not any(v.kind in GROUND_REF_KINDS and v.ground and groups[v.ground.net] == g
                    for v in setup.vrms):
             errors.append(f"Ground {group_name(g)} needs a reference: set the ground pins of "
                           "the source VRM that returns current through it (and solve that "
-                          "VRM's rail)")
+                          "VRM's rail), or for an isolated converter's output side, that "
+                          "converter's output ground pins")
 
     # The power tree must not loop (A feeds B feeds A).
     feeds = {groups[v.output.net]: set() for v in setup.vrms}
@@ -794,7 +947,7 @@ def _estimated_input(setup: PISetup, groups, v: Vrm, seen=frozenset()) -> float:
     if v.name in seen:                       # a power-tree loop; validate() reports it
         return 0.0
     i_out = _supplied_current(setup, groups, groups[v.output.net], seen | {v.name})
-    if v.kind == "smps":
+    if v.kind in SWITCHING_KINDS:
         feed = next((u for u in setup.vrms if groups[u.output.net] == groups[v.input.net]),
                     None)
         if feed is None or feed.voltage <= 0:
@@ -845,7 +998,8 @@ def active_setup(setup: PISetup) -> Tuple[PISetup, List[str]]:
                 n = len(phases)
                 for k, ph in enumerate(phases, start=1):
                     name = f"{v.name} (input)" if n == 1 else f"{v.name} (input, phase {k})"
-                    loads.append(Load(name, ph.input, amps / n, ground=kept(ph.ground)))
+                    loads.append(Load(name, ph.input, amps / n,
+                                      ground=kept(v.input_return(ph))))
                 notes.append(f"{v.name}: its output ({group_name(groups[v.output.net])}) is "
                              f"not solved, so its input draws an estimated {amps:.4g} A "
                              "(nominal voltages, no copper losses on that rail)")
@@ -853,9 +1007,11 @@ def active_setup(setup: PISetup) -> Tuple[PISetup, List[str]]:
         if v.input and not solved(v.input.net):
             notes.append(f"{v.name}: its input ({group_name(groups[v.input.net])}) is not "
                          "solved, so it is treated as an ideal source")
-            v.kind, v.input = "source", None
+            # An isolated converter's output ground stays referenced, as a source's.
+            v.kind, v.input, v.input_ground = "source", None, None
             for ph in v.phases:
                 ph.input = None
+        v.input_ground = kept(v.input_ground)
         if v.ground and not solved(v.ground.net):
             v.ground = v.ground_sense = None
             for ph in v.phases:
