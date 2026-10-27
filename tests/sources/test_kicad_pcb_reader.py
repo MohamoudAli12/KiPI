@@ -97,9 +97,11 @@ def test_vias_match_kicad(boards):
 def test_footprints_match_kicad(boards):
     import dataclasses
     _, snap, ref = boards
-    # The references were saved before footprints recorded their rotation (#130).
+    # The references were saved before footprints recorded their rotation (#130) and
+    # their fields.
     def unturned(fps):
-        return sorted((dataclasses.replace(f, angle_deg=None) for f in fps), key=lambda f: f.id)
+        return sorted((dataclasses.replace(f, angle_deg=None, fields={}) for f in fps),
+                      key=lambda f: f.id)
     assert unturned(snap.footprints) == unturned(ref.footprints)
     assert {f.reference: f.angle_deg for f in snap.footprints} == {"U1": 30.0, "J1": 90.0}
     assert {f.reference: f.side for f in snap.footprints} == {"U1": "top", "J1": "bottom"}

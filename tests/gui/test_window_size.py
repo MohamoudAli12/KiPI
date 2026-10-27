@@ -53,3 +53,30 @@ def test_the_side_docks_scroll_rather_than_set_the_window_height(window):
     # The setup and board docks scroll, so the window's minimum stays well under a
     # small laptop screen's 874 px.
     assert window.minimumSizeHint().height() <= 600
+
+
+def _board_split(window):
+    from qtpy.QtWidgets import QDockWidget, QSplitter
+    return window.findChild(QDockWidget, "board_dock").widget().widget().findChild(QSplitter)
+
+
+def test_the_board_dock_runs_the_full_height(window):
+    # Under a full-width log it had no height to spare, so its sections could not be
+    # resized: every one sat at its minimum.
+    from qtpy.QtCore import Qt
+    assert window.corner(Qt.BottomLeftCorner) == Qt.LeftDockWidgetArea
+
+
+def test_board_sections_resize_without_snapping_shut(window):
+    split = _board_split(window)
+    assert not split.childrenCollapsible()
+    stretch = [split.widget(i).sizePolicy().verticalStretch() for i in range(split.count())]
+    assert stretch[0] == max(stretch)                    # the net list grows first
+
+
+def test_board_lists_stay_tall_enough_to_drag_their_scroll_bars(window):
+    # Squeezed to two rows, a list's scroll bar was all handle and could not be dragged.
+    rows = window.net_list.fontMetrics().lineSpacing()
+    assert window.net_list.minimumHeight() >= 8 * rows
+    assert window.layer_list.minimumHeight() >= 4 * rows
+    assert window.info.minimumHeight() >= 4 * rows

@@ -6,9 +6,13 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List
 
+import numpy as np
+
 from kipi.core.geometry import silkscreen as silk
+from kipi.core.geometry.shapes import segment_strokes
 from kipi.core.model.board import Poly
 from kipi.core.progress import ProgressReporter
+from kipi.sources.kicad_ipc.convert import NM_PER_MM, mm, pt
 from kipi.sources.kicad_ipc.copper_shapes import shape_geometry
 
 
@@ -26,11 +30,41 @@ def _shown(item) -> bool:
     return True
 
 
+def _geometries(shapes: Iterable) -> List:
+    """``shapes`` (kipy shapes) as shapely geometries. Straight segments are stroked
+    together in one go."""
+    from kipy.common_types import Segment
+    out, segs = [], []
+    for s in shapes:
+        if isinstance(s, Segment):
+            (x0, y0), (x1, y1) = pt(s.start), pt(s.end)
+            segs.append((x0, y0, x1, y1, mm(s.attributes.stroke.width)))
+        else:
+            out.append(shape_geometry(s))
+    return out + segment_strokes(segs)
+
+
+def _proto_geometries(protos: Iterable) -> List:
+    """Graphic shape messages as shapely geometries. Text is drawn with tens of
+    thousands of straight segments, so those are read straight off the messages rather
+    than through kipy's wrappers, and stroked together in one go."""
+    from kipy.common_types import GraphicShape, to_concrete_shape
+    out, segs = [], []
+    for g in protos:
+        if g.WhichOneof("geometry") == "segment":
+            a, b = g.segment.start, g.segment.end
+            segs.append((a.x_nm, a.y_nm, b.x_nm, b.y_nm, g.attributes.stroke.width.value_nm))
+        else:
+            s = to_concrete_shape(GraphicShape(g))
+            if s is not None:
+                out.append(shape_geometry(s))
+    return out + segment_strokes(np.asarray(segs, dtype=float) / NM_PER_MM)
+
+
 def _text_shapes(board, texts: List) -> List:
     """KiCad's own drawing of ``texts`` (free text, fields, text boxes), as shapely
     geometries."""
     from kipy.board_types import BoardTextBox, Field
-    from kipy.common_types import CompoundShape
     from kipy.proto.common.commands import base_commands_pb2
     cmd = base_commands_pb2.GetTextAsShapes()
     for t in texts:
@@ -40,19 +74,19 @@ def _text_shapes(board, texts: List) -> List:
         else:
             inner.text.CopyFrom((t.text if isinstance(t, Field) else t).as_text().proto)
     reply = board.client.send(cmd, base_commands_pb2.GetTextAsShapesResponse)
-    return [shape_geometry(s) for entry in reply.text_with_shapes
-            for s in CompoundShape(entry.shapes).shapes]
+    return _proto_geometries(g for entry in reply.text_with_shapes for g in entry.shapes.shapes)
 
 
 def read_silkscreen(board, shapes: Iterable, footprints: Iterable,
                     progress: ProgressReporter, assumed: List[str]) -> Dict[str, List[Poly]]:
     """What each side's silkscreen prints: ``shapes`` (the board's and footprints'
     graphic shapes) and the text of the board and of ``footprints``."""
-    parts: Dict[str, list] = {"top": [], "bottom": []}
+    drawn: Dict[str, list] = {"top": [], "bottom": []}
     for s in shapes:
         side = _side(s.layer)
         if side:
-            parts[side].append(shape_geometry(s))
+            drawn[side].append(s)
+    parts = {side: _geometries(items) for side, items in drawn.items()}
     texts: Dict[str, list] = {"top": [], "bottom": []}
     for t in list(board.get_text()) + [t for fp in footprints for t in fp.texts_and_fields]:
         side = _side(t.layer)

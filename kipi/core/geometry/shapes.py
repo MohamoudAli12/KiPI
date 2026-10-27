@@ -34,6 +34,27 @@ def stroke(line_pts: Sequence[tuple], width_mm: float):
     return LineString(line_pts).buffer(width_mm / 2.0, quad_segs=SHAPE_QUAD_SEGS)
 
 
+def segment_strokes(segs) -> List:
+    """Stroked straight segments, rows of ``(x0, y0, x1, y1, width_mm)``, as shapely
+    geometries: the same ink as :func:`stroke` of each, made far faster. A segment that
+    runs on from the one before (text glyphs are drawn so) is stroked with it as one
+    path, leaving fewer, larger pieces to merge afterwards."""
+    import numpy as np
+    import shapely
+    s = np.asarray(segs, dtype=float).reshape(-1, 5)
+    s = s[s[:, 4] > 0]
+    if len(s) == 0:
+        return []
+    joins = np.zeros(len(s), dtype=bool)
+    joins[1:] = (s[1:, 0] == s[:-1, 2]) & (s[1:, 1] == s[:-1, 3]) & (s[1:, 4] == s[:-1, 4])
+    starts = np.flatnonzero(~joins)
+    ends = np.append(starts[1:], len(s))
+    paths = [np.vstack([s[a:b, :2], s[b - 1, 2:4]]) for a, b in zip(starts, ends)]
+    lines = shapely.linestrings(np.concatenate(paths),
+                                indices=np.repeat(np.arange(len(paths)), [len(p) for p in paths]))
+    return list(shapely.buffer(lines, s[starts, 4] / 2.0, quad_segs=SHAPE_QUAD_SEGS))
+
+
 def area(shape, width_mm: float, filled: bool):
     """A closed shape: its interior when filled, plus its stroke along the boundary."""
     parts = []

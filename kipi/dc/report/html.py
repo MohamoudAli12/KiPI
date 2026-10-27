@@ -85,8 +85,26 @@ def _png(fig, dpi: int = 110) -> str:
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     FigureCanvasAgg(fig)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+# The web page's figures are dark like the page (and KiPI's plots); a PDF's stay white.
+DARK_BG, DARK_FG, DARK_EDGE = "#1e1e1e", "#e0e0e0", "#666666"
+
+
+def _darken(fig) -> None:
+    """Redraw a finished figure light on dark: background, text, ticks and frames, its
+    colour bars' too."""
+    fig.patch.set_facecolor(DARK_BG)
+    for ax in fig.axes:
+        ax.set_facecolor(DARK_BG)
+        ax.tick_params(colors=DARK_FG, which="both")
+        for spine in ax.spines.values():
+            spine.set_edgecolor(DARK_EDGE)
+        for text in (ax.title, ax.xaxis.label, ax.yaxis.label,
+                     ax.xaxis.get_offset_text(), ax.yaxis.get_offset_text()):
+            text.set_color(DARK_FG)
 
 
 # A voltage in the unit the reader picks (#177): mV or % from the target voltage, or
@@ -169,6 +187,8 @@ def _layer_map(lr, values, cell: bool, title: str, cmap: str, unit: str,
                             f"{title}, {lo:.6f} to {hi:.6f} V", cmap, label, clip_pct, outline,
                             size)
         cb.formatter.set_useOffset(False)
+    if not pdf:
+        _darken(fig)
     return _png(fig, PDF_MAP_DPI if pdf else 110)
 
 
@@ -245,6 +265,8 @@ def _thermal_map(th, outline, layer, title, vmin, vmax, pdf: bool = False) -> st
     ax.tick_params(labelsize=7)
     cb = fig.colorbar(m, ax=ax, shrink=0.85)
     cb.set_label("°C", fontsize=8)
+    if not pdf:
+        _darken(fig)
     return _png(fig, PDF_MAP_DPI if pdf else 110)
 
 
@@ -274,7 +296,8 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
     """Interactive 3D view of one group: copper colored by voltage, plus vias."""
     import plotly.graph_objects as go
     import plotly.io as pio
-    import pyvista as pv
+
+    from kipi.core.viz.polydata import triangles
 
     st = snap.stackup
     total = sum(len(lr.tris) for lr in scene.layers.values()) or 1
@@ -290,8 +313,7 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
         cu = st.layer(lid)
         pts = np.column_stack([lr.pts2[:, 0], -lr.pts2[:, 1],
                                np.full(len(lr.pts2), cu.z_top_mm * Z_EXAGGERATION)])
-        faces = np.column_stack([np.full(len(lr.tris), 3), lr.tris]).ravel()
-        sheet = pv.PolyData(pts, faces)
+        sheet = triangles(pts, lr.tris)
         sheet.point_data["V"] = np.nan_to_num(lr.node_v, nan=vmin)
         if keep < 0.98 and sheet.n_cells > 200:
             sheet = _decimate(sheet, keep)
@@ -317,7 +339,8 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
         traces.append(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines", name="vias",
                                    line=dict(color="#bbbbbb", width=3), hoverinfo="skip"))
     fig = go.Figure(traces)
-    fig.update_layout(height=560, margin=dict(l=0, r=0, t=30, b=0),
+    fig.update_layout(height=560, margin=dict(l=0, r=0, t=30, b=0), template="plotly_dark",
+                      paper_bgcolor=DARK_BG,
                       scene=dict(aspectmode="data", xaxis_title="x (mm)",
                                  yaxis_title="y (mm)", zaxis_title=f"z ×{Z_EXAGGERATION:g}"),
                       legend=dict(orientation="h"))
@@ -329,40 +352,47 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
 # Report
 # ---------------------------------------------------------------------------
 
+# Dark, like KiPI's own windows; printed from the browser, light again. A PDF report has
+# its own style sheet (kipi.core.pdf) and stays light.
 CSS = """
+:root { color-scheme: dark; }
 body { font-family: Segoe UI, Helvetica, Arial, sans-serif; margin: 24px auto; max-width: 1180px;
-       color: #222; background: #fafafa; }
-h1 { margin-bottom: 0; } h2 { border-bottom: 2px solid #ddd; padding-bottom: 4px; margin-top: 36px; }
+       color: #e0e0e0; background: #1e1e1e; }
+h1 { margin-bottom: 0; } h2 { border-bottom: 2px solid #3e3e3e; padding-bottom: 4px; margin-top: 36px; }
 h3 { margin-top: 26px; }
-.meta { color: #666; margin-top: 4px; }
-table { border-collapse: collapse; margin: 8px 0 16px; font-size: 13px; background: white; }
-th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: right; }
-th { background: #f0f0f0; } td:first-child, th:first-child { text-align: left; }
-.pass { color: #1a8f2c; font-weight: bold; } .fail { color: #c62828; font-weight: bold; }
-.unjudged { color: #b26a00; font-weight: bold; }
+a { color: #6ab0f3; } a:visited { color: #b18cf0; }
+.meta { color: #9a9a9a; margin-top: 4px; }
+table { border-collapse: collapse; margin: 8px 0 16px; font-size: 13px; background: #262626; }
+th, td { border: 1px solid #3e3e3e; padding: 4px 8px; text-align: right; }
+th { background: #2f2f2f; } td:first-child, th:first-child { text-align: left; }
+.pass { color: #4cc35f; font-weight: bold; } .fail { color: #ff6b6b; font-weight: bold; }
+.unjudged { color: #f0a840; font-weight: bold; }
 .maps { display: flex; flex-wrap: wrap; gap: 12px; }
-.maps figure { margin: 0; background: white; border: 1px solid #ddd; padding: 6px; }
+.maps figure { margin: 0; background: #1e1e1e; border: 1px solid #3e3e3e; padding: 6px; }
 .maps img { width: 520px; max-width: 100%; }
-.note { color: #666; font-size: 12px; }
+.note { color: #9a9a9a; font-size: 12px; }
 nav a { margin-right: 12px; }
 .vu { display: none; }
 html:not([data-vunit]) .vu-mv, html[data-vunit=mv] .vu-mv, html[data-vunit=pct] .vu-pct,
 html[data-vunit=v] .vu-v { display: inline; }
-.vunit { position: sticky; top: 0; background: #fafafa; padding: 6px 0; margin: 8px 0;
+.vunit { position: sticky; top: 0; background: #1e1e1e; padding: 6px 0; margin: 8px 0;
          z-index: 2; }
 .layer-toggles { font-size: 13px; margin: 6px 0; }
 .layer-toggles label { margin-right: 12px; white-space: nowrap; cursor: pointer; }
 details > summary { cursor: pointer; margin: 6px 0; }
 thead th { cursor: pointer; user-select: none; }
 thead th[data-sort=asc]::after { content: " \\25B2"; } thead th[data-sort=desc]::after { content: " \\25BC"; }
-#user-notes-text { min-height: 4em; background: white; border: 1px solid #ccc; padding: 8px 10px;
+#user-notes-text { min-height: 4em; background: #262626; border: 1px solid #555; padding: 8px 10px;
                    border-radius: 3px; white-space: pre-wrap; outline: none; }
-#user-notes-text:focus { border-color: #4a90d9; }
-#user-notes-text.empty::before { content: attr(data-placeholder); color: #999; }
+#user-notes-text:focus { border-color: #2f7fd0; }
+#user-notes-text.empty::before { content: attr(data-placeholder); color: #777; }
 #user-notes-text img { max-width: 100%; }
-.notes-bar { margin-top: 6px; font-size: 12px; color: #666; }
+.notes-bar { margin-top: 6px; font-size: 12px; color: #9a9a9a; }
 .notes-bar button { margin-right: 10px; }
-@media print { .notes-bar { display: none; } #user-notes-text { border: none; padding: 0; }
+@media print { :root { color-scheme: light; } body { color: #222; background: white; }
+               table, #user-notes-text { background: white; } th { background: #f0f0f0; }
+               th, td { border-color: #ccc; } .meta, .note { color: #666; }
+               .notes-bar { display: none; } #user-notes-text { border: none; padding: 0; }
                #user-notes-text.empty::before { content: none; } .notes-empty { display: none; } }
 """
 

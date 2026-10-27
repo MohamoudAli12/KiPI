@@ -1,4 +1,4 @@
-"""The plugin offers PARDISO on first start, ticked, and remembers an opt-out (#129)."""
+"""PARDISO comes with the plugin's requirements; turned off, it is removed and left unused."""
 
 import os
 import sys
@@ -39,14 +39,6 @@ def here(monkeypatch):
     return calls
 
 
-def test_offered_only_when_it_can_be_had_and_was_not_turned_down():
-    assert ps.should_offer(None, False, True)
-    assert ps.should_offer("on", False, True)         # the environment was recreated
-    assert not ps.should_offer("off", False, True)
-    assert not ps.should_offer(None, True, True)
-    assert not ps.should_offer(None, False, False)
-
-
 def test_not_offered_outside_a_virtual_environment(monkeypatch):
     monkeypatch.setattr(ps, "pardiso_supported", lambda: (True, ""))
     monkeypatch.setattr(sys, "base_prefix", sys.prefix)
@@ -69,31 +61,24 @@ def _answer(monkeypatch, accept: bool, tick: bool):
     monkeypatch.setattr(ps.PardisoDialog, "exec", exec_)
 
 
-def test_first_start_installs_when_left_ticked(app, settings, here, monkeypatch):
-    _answer(monkeypatch, accept=True, tick=True)
-    ps.startup()
-    assert here == ["install"] and settings.value(ps.CHOICE_KEY) == "on"
-
-
-def test_opting_out_is_remembered(app, settings, here, monkeypatch):
-    _answer(monkeypatch, accept=True, tick=False)
-    ps.startup()
-    assert here == [] and settings.value(ps.CHOICE_KEY) == "off"
-    monkeypatch.setattr(ps.PardisoDialog, "exec", lambda self: pytest.fail("asked again"))
-    ps.startup()
-
-
-def test_closing_the_dialog_decides_nothing(app, settings, here, monkeypatch):
-    _answer(monkeypatch, accept=False, tick=True)
+def test_start_asks_nothing(app, settings, here, monkeypatch):
+    """KiCad installs PARDISO with the requirements; the start no longer offers it."""
+    monkeypatch.setattr(ps.PardisoDialog, "exec", lambda self: pytest.fail("asked"))
     ps.startup()
     assert here == [] and settings.value(ps.CHOICE_KEY) is None
 
 
-def test_a_failed_install_is_not_asked_again_every_start(app, settings, here, monkeypatch):
-    monkeypatch.setattr(ps, "install", lambda parent=None: "canceled")
-    _answer(monkeypatch, accept=True, tick=True)
-    ps.startup()
-    assert settings.value(ps.CHOICE_KEY) == "off"
+def test_requirements_install_it_where_mkl_is_published():
+    from pathlib import Path
+    from packaging.requirements import Requirement
+    lines = (Path(__file__).resolve().parents[2] / "requirements.txt").read_text().splitlines()
+    req = next(Requirement(x) for x in lines if x.startswith("pypardiso"))
+    env = lambda system, machine: {"sys_platform": system, "platform_machine": machine}  # noqa: E731
+    assert req.marker.evaluate(env("win32", "AMD64"))
+    assert req.marker.evaluate(env("linux", "x86_64"))
+    assert not req.marker.evaluate(env("darwin", "arm64"))
+    assert not req.marker.evaluate(env("darwin", "x86_64"))
+    assert not req.marker.evaluate(env("linux", "aarch64"))
 
 
 def test_removal_waits_for_the_next_start(app, settings, here, monkeypatch):

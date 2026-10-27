@@ -13,6 +13,8 @@ from qtpy.QtWidgets import QApplication  # noqa: E402
 from kipi.gui import browser  # noqa: E402
 from kipi.gui import help as kipi_help  # noqa: E402
 
+_xdg_open = browser._xdg_open      # the real one: conftest stubs it out for every test
+
 
 @pytest.fixture(scope="module")
 def app():
@@ -76,6 +78,39 @@ def test_open_help_says_where_the_guide_is_when_no_browser_opens(app, monkeypatc
                         lambda parent, title, text: shown.append(text))
     assert not kipi_help.open_help()
     assert shown and "help.html" in shown[0]
+
+
+def test_linux_opens_with_xdg_open_in_kipis_own_environment(app, monkeypatch, tmp_path):
+    # Qt's openUrl goes through the desktop portal, which says yes and then fails to
+    # start the browser where it runs without the display: xdg-open is run directly.
+    import subprocess
+    from kipi.gui.browser import open_in_browser
+    monkeypatch.setattr(browser, "_xdg_open", _xdg_open)
+    runs = []
+    monkeypatch.setattr(browser.sys, "platform", "linux")
+    monkeypatch.setattr(browser.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **kw: runs.append((args, kw)))
+    monkeypatch.setattr(browser.QDesktopServices, "openUrl",
+                        lambda url: pytest.fail("Qt's openUrl used on Linux"))
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("PYTHONPATH", "/kipi/venv")
+    report = tmp_path / "report.html"
+    assert open_in_browser(report)
+    (args, kw), = runs
+    assert args == ["/usr/bin/xdg-open", str(report.resolve())]
+    assert kw["env"]["DISPLAY"] == ":0" and "PYTHONPATH" not in kw["env"]
+    assert kw["start_new_session"]
+
+
+def test_without_xdg_open_linux_falls_back_to_qt(app, monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(browser, "_xdg_open", _xdg_open)
+    monkeypatch.setattr(browser.sys, "platform", "linux")
+    monkeypatch.setattr(browser.shutil, "which", lambda name: None)
+    monkeypatch.setattr(browser.QDesktopServices, "openUrl",
+                        lambda url: opened.append(url.toLocalFile()) or True)
+    assert browser.open_in_browser(tmp_path / "r.html")
+    assert opened == [str((tmp_path / "r.html").resolve())]
 
 
 def test_open_help_without_the_guide_points_online(app, monkeypatch):

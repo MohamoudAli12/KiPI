@@ -16,6 +16,8 @@ from typing import Dict, Hashable, Iterable, List, Optional, Set, Tuple
 import numpy as np
 import pyvista as pv
 
+from kipi.core.viz.polydata import arrays, set_cell_array, triangles
+
 Category = Hashable       # e.g. ("cu", layer_id), ("pad", layer_id), ("via", -1)
 RGB = Tuple[float, float, float]
 
@@ -32,11 +34,8 @@ class _Part:
 
 
 def _arrays(mesh: pv.PolyData) -> Tuple[np.ndarray, np.ndarray]:
-    if not mesh.is_all_triangles:
-        mesh = mesh.triangulate()
-    pts = np.asarray(mesh.points, dtype=np.float32)
-    tris = mesh.faces.reshape(-1, 4)[:, 1:].astype(np.int64, copy=False)
-    return pts, tris
+    pts, tris = arrays(mesh)
+    return pts.astype(np.float32), tris.astype(np.int64)
 
 
 class Chunk:
@@ -65,14 +64,10 @@ class Chunk:
         offsets = np.cumsum([0] + [len(p.points) for p in parts[:-1]])
         pts = np.concatenate([p.points for p in parts])
         tris = np.concatenate([p.tris + o for p, o in zip(parts, offsets)])
-        faces = np.empty((len(tris), 4), dtype=np.int64)
-        faces[:, 0] = 3
-        faces[:, 1:] = tris
-        rgb = np.concatenate([
-            np.tile(np.round(np.asarray(p.color) * 255).astype(np.uint8), (len(p.tris), 1))
-            for p in parts])
-        mesh = pv.PolyData(pts, faces.ravel())
-        mesh.cell_data["rgb"] = rgb
+        colors = np.round(np.array([p.color for p in parts]) * 255).astype(np.uint8)
+        rgb = np.repeat(colors, [len(p.tris) for p in parts], axis=0)
+        mesh = triangles(pts, tris)
+        set_cell_array(mesh, "rgb", rgb)
         self.mesh = mesh
         return mesh
 

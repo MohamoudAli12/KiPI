@@ -16,6 +16,7 @@ from qtpy.QtCore import QTimer, Signal
 from qtpy.QtWidgets import QVBoxLayout, QWidget
 
 from kipi.core.viz.batch import Chunk, MeshBatcher
+from kipi.core.viz.polydata import arrays, set_cell_array, set_point_array, triangles
 from kipi.dc.viz.results import FIELDS, ResultScene, flat_arrows, scale_decimals
 from kipi.core.viz.meshes import NetScene
 
@@ -182,16 +183,14 @@ def _merge_models(meshes: List[pv.PolyData]) -> Optional[pv.PolyData]:
     meshes = [m for m in meshes if m is not None and m.n_cells]
     if not meshes:
         return None
-    offsets = np.cumsum([0] + [m.n_points for m in meshes[:-1]])
-    faces = np.concatenate([m.regular_faces + o for m, o in zip(meshes, offsets)])
-    cells = np.empty((len(faces), 4), dtype=np.int64)
-    cells[:, 0] = 3
-    cells[:, 1:] = faces
-    out = pv.PolyData(np.concatenate([m.points for m in meshes]), cells.ravel())
-    out.cell_data["rgb"] = np.concatenate([np.asarray(m.cell_data["rgb"]) for m in meshes])
+    parts = [arrays(m) for m in meshes]
+    offsets = np.cumsum([0] + [len(p) for p, _ in parts[:-1]])
+    faces = np.concatenate([t + o for (_, t), o in zip(parts, offsets)])
+    out = triangles(np.concatenate([p for p, _ in parts]), faces)
+    set_cell_array(out, "rgb", np.concatenate([np.asarray(m.cell_data["rgb"]) for m in meshes]))
     if all("Normals" in m.point_data for m in meshes):
-        out.point_data["Normals"] = np.concatenate([np.asarray(m.point_data["Normals"])
-                                                    for m in meshes])
+        set_point_array(out, "Normals", np.concatenate([np.asarray(m.point_data["Normals"])
+                                                        for m in meshes]))
         out.point_data.active_normals_name = "Normals"
     return out
 

@@ -37,9 +37,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
-import scipy.sparse as sp
 import shapely
-from scipy.interpolate import RegularGridInterpolator
 
 from kipi.core.geometry.copper import poly_to_shapely
 from kipi.core.geometry.silkscreen import printed_silk
@@ -93,6 +91,7 @@ class LayerTemperatures:
             temps = temps[None]
         filled = np.where(np.isnan(temps), fill, temps)
         self._x, self._y = x, y
+        from scipy.interpolate import RegularGridInterpolator   # SciPy: not at KiPI's start
         self._f = [RegularGridInterpolator((y, x), t, bounds_error=False, fill_value=None)
                    for t in filled]
         self._index = ({int(lid): i for i, lid in enumerate(layers)}
@@ -231,6 +230,7 @@ class BoardThermalModel:
             self.g_conv[li] += d * d / (r + silk[side] * coating_resistance(st, side, SILK))
         self.g_conv[:, ~self.inside] = 0.0
         diag += self.g_conv[:, self.inside].T.ravel()
+        import scipy.sparse as sp
         A = sp.coo_matrix((np.concatenate(vals + [diag]),
                            (np.concatenate(rows + [np.arange(n)]),
                             np.concatenate(cols + [np.arange(n)]))), shape=(n, n)).tocsc()

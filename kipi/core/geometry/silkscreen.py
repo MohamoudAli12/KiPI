@@ -29,13 +29,15 @@ def silk_side(layer_name: str) -> Optional[str]:
 
 def merge(parts_by_side: Dict[str, Iterable]) -> Dict[str, List[Poly]]:
     """Each side's geometries merged into polygons, leaving out sides with none."""
-    out = {}
-    for side, parts in parts_by_side.items():
+    from kipi.core.geometry.parallel import pmap, union_all
+
+    def side_polys(parts):
         parts = [g for g in parts if g is not None and not g.is_empty]
-        polys = shapely_to_polys(shapely.union_all(parts)) if parts else []
-        if polys:
-            out[side] = polys
-    return out
+        return shapely_to_polys(union_all(parts)) if parts else []
+
+    sides = list(parts_by_side)
+    merged = pmap(side_polys, [parts_by_side[s] for s in sides])
+    return {side: polys for side, polys in zip(sides, merged) if polys}
 
 
 def _union(polys: Iterable[Poly]):
@@ -53,18 +55,31 @@ def mask_openings(snap: BoardSnapshot, side: str):
     return _union(q for pad in snap.pads for q in pad.shapes.get(cu.id, []))
 
 
-def printed_silk(snap: BoardSnapshot, side: str, board=None):
+def _merged(polys: List[Poly]):
+    """``polys`` as one geometry. They were merged when the board was read, so they do
+    not overlap and need no union, unless they come from somewhere that did not merge."""
+    parts = [g for g in (poly_to_shapely(p) for p in polys) if g is not None and not g.is_empty]
+    if not parts:
+        return None
+    flat = [q for g in parts for q in getattr(g, "geoms", [g]) if q.geom_type == "Polygon"]
+    geom = shapely.MultiPolygon(flat)
+    return geom if geom.is_valid else shapely.union_all(parts)
+
+
+def printed_silk(snap: BoardSnapshot, side: str, board=None, openings=False):
     """Where the silkscreen on ``side`` puts ink: its printing, on the board (``board``,
-    the outline as one geometry, else read from the snapshot) and off the open pads.
-    None if nothing is printed there."""
-    ink = _union(snap.silkscreen.get(side, []))
+    the outline as one geometry, else read from the snapshot) and off the open pads
+    (``openings``, as :func:`mask_openings` gives them, else worked out here). None if
+    nothing is printed there."""
+    ink = _merged(snap.silkscreen.get(side, []))
     if ink is None:
         return None
     if board is None:
         board = _union(snap.outline)
     if board is not None:
         ink = ink.intersection(board)
-    openings = mask_openings(snap, side)
+    if openings is False:
+        openings = mask_openings(snap, side)
     if openings is not None:
         ink = ink.difference(openings)
     return None if ink.is_empty else ink

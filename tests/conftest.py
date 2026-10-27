@@ -36,8 +36,10 @@ def opened_in_browser(monkeypatch):
     monkeypatch.setattr(webbrowser, "open", lambda uri, *a, **k: opened.append(uri) or True)
     try:
         from qtpy.QtGui import QDesktopServices
+        from kipi.gui import browser
     except Exception:                       # no Qt binding: nothing else can open one
         return opened
+    monkeypatch.setattr(browser, "_xdg_open", lambda path: False)   # on to Qt's, below
     monkeypatch.setattr(QDesktopServices, "openUrl",
                         lambda url: opened.append(url.toLocalFile()) or True)
     return opened

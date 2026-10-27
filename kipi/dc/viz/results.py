@@ -11,7 +11,6 @@ KiCad's y axis is flipped (y -> -y) as everywhere else in the viewer.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -23,25 +22,8 @@ from kipi.core.model.board import BoardSnapshot, Stackup
 from kipi.core.temperature import at as temperature_at
 from kipi.core.progress import NULL, ProgressReporter
 from kipi.core.viz.meshes import slab_from_triangles
-
-# name -> (array, association, label, unit). Association "via" means the field lives
-# on the via barrels rather than the copper layers.
-FIELDS = {
-    "voltage": ("V", "point", "Voltage", "V"),
-    "current_density": ("J", "cell", "Current density", "A/mm²"),
-    "power_density": ("P", "cell", "Power density", "mW/mm²"),
-    "temperature": ("T", "point", "Temperature", "°C"),
-    "via_current": ("I_mA", "via", "Via current", "mA"),
-}
-
-
-def scale_decimals(lo: float, hi: float) -> int:
-    """Decimals that tell apart six values spread over ``lo``..``hi``: a 3.3 V rail that
-    sags by 0.4 mV needs five, or every one reads "3.3"."""
-    span = abs(hi - lo)
-    if not span > 0 or not math.isfinite(span):
-        return 4
-    return min(9, max(0, int(np.ceil(-np.log10(span / 5))) + 1))
+from kipi.core.viz.polydata import triangles
+from kipi.dc.viz.fields import FIELDS, scale_decimals  # noqa: F401 - imported from here too
 
 
 @dataclass
@@ -144,8 +126,8 @@ def flat_arrows(pts: np.ndarray, dirs: np.ndarray, lengths: np.ndarray,
         xyz = np.concatenate([outline, np.full((n, 7, 1), float(z))], axis=2).reshape(-1, 3)
         points.append(xyz)
         tri = (local[None, :, :] + 7 * (np.arange(n)[:, None, None] + k * n)).reshape(-1, 3)
-        faces.append(np.hstack([np.full((len(tri), 1), 3), tri]))
-    return pv.PolyData(np.concatenate(points), np.concatenate(faces).ravel())
+        faces.append(tri)
+    return triangles(np.concatenate(points), np.concatenate(faces))
 
 
 def current_arrows(pts2: np.ndarray, tris: np.ndarray, grad: np.ndarray, area: np.ndarray,

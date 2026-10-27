@@ -11,6 +11,7 @@ UNSAVED_STYLE = "QPushButton { border: 2px solid #ff8c00; border-radius: 3px; pa
 
 class SetupFileBar(QWidget):
     import_requested = Signal()            # fill the setup from a power-tree file
+    autofill_requested = Signal()          # fill one rail from the board and parts library
     save_requested = Signal()
 
     def __init__(self, parent=None):
@@ -29,11 +30,20 @@ class SetupFileBar(QWidget):
             "<p>Settings, thermal and the AC setup are kept; the log lists anything that "
             "could not be placed on the board.</p>")
         self.btn_import.clicked.connect(self.import_requested.emit)
+        self.btn_autofill = QPushButton("Auto-fill rail…", self)
+        self.btn_autofill.setToolTip(
+            "<p>Fill one rail's power tree from the board: its source, the beads and small "
+            "resistors into its branches, and every load on it.</p>"
+            "<p>Currents, resistances and ratings come from each part's PI_I, PI_R, "
+            "PI_IMAX and PI_PMAX fields, else from pi_parts.yml (by part number). Parts with "
+            "no data are listed, and can be added to pi_parts.yml to fill in.</p>")
+        self.btn_autofill.clicked.connect(self.autofill_requested.emit)
         self.btn_save = QPushButton("Save", self)
         self.btn_save.setToolTip(SAVE_TIP)
         self.btn_save.clicked.connect(self.save_requested.emit)
         row.addWidget(self.lbl_file, 1)
         row.addWidget(self.btn_import)
+        row.addWidget(self.btn_autofill)
         row.addWidget(self.btn_save)
 
     def set_label(self, text: str):

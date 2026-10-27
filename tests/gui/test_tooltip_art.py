@@ -89,6 +89,7 @@ def test_every_drawing_shows_in_a_tooltip(app, no_3d):
     pytest.importorskip("pyvistaqt")
     from kipi.gui.main_window import MainWindow
     w = MainWindow()
+    w._build_modes()                # the AC and Coupled Noise panels: built when first wanted
     tips = " ".join(c.toolTip() for c in w.findChildren(QWidget))
     w.close()
     for name in ta.names():
@@ -109,6 +110,7 @@ def test_pin_pickers_show_their_drawing_once_under_all_their_text(app, no_3d):
     from kipi.dc.gui.pi_panel import LinkEditor, VrmEditor
     from kipi.gui.main_window import MainWindow
     w = MainWindow()
+    w._build_modes()                # built when first wanted
     vrms = w.findChildren(VrmEditor)
     links = w.findChildren(LinkEditor)
     assert {e.mode for e in vrms} == {"dc", "ac"} and links

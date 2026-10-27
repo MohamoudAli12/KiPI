@@ -160,9 +160,10 @@ single-threaded one. On a 645k-unknown rail one solve drops from about 8 s to 1.
 boards gain little. It costs about 210 MB of download on Windows (320 MB on Linux) and
 there are no MKL packages for macOS or ARM.
 
-KiPI installs it by default where it can, with an opt-out: in the launcher's first setup
-standalone, or in a prompt the first time the plugin opens. *About → Manage dependencies…*
-adds or removes it later, and *About → Copy version info* shows which solver is in use. If
+The KiCad plugin gets it with its other requirements, installed by KiCad into the plugin's
+environment. Standalone, the launcher's first setup installs it by default, with an
+opt-out. *About → Manage dependencies…* adds or removes it later (in the plugin, removed it
+is also left unused, since KiCad puts it back when it reloads the plugin), and *About → Copy version info* shows which solver is in use. If
 PARDISO cannot load, KiPI falls back to SciPy and says so in the log.
 
 ## Using KiPI

@@ -11,3 +11,5 @@ pyamg>=5.0
 plotly>=5.20
 matplotlib>=3.8
 PyYAML>=6.0
+# PARDISO (Intel MKL): published for Windows and Linux on x86-64 only.
+pypardiso>=0.4.6; (sys_platform == "win32" or sys_platform == "linux") and (platform_machine == "AMD64" or platform_machine == "x86_64")

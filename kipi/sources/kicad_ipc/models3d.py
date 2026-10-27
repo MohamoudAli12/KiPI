@@ -173,15 +173,12 @@ def to_mesh(part):
     uses millimeters with board Y flipped so Z is up: ``(x, -y, z)``. Each triangle keeps
     its color in the ``rgb`` cell array.
     """
-    import pyvista as pv
+    from kipi.core.viz.polydata import set_cell_array, set_point_array, triangles
     pts = part.points[:, [0, 2, 1]] * np.array([1000.0, -1000.0, 1000.0])
-    faces = np.empty((len(part.tris), 4), dtype=np.int64)
-    faces[:, 0] = 3
-    faces[:, 1:] = part.tris
-    mesh = pv.PolyData(pts, faces.ravel())
-    mesh.cell_data["rgb"] = part.rgb
+    mesh = triangles(pts, part.tris)
+    set_cell_array(mesh, "rgb", part.rgb)
     if part.normals is not None:
-        mesh.point_data["Normals"] = part.normals[:, [0, 2, 1]] * np.array([1.0, -1.0, 1.0])
+        set_point_array(mesh, "Normals", part.normals[:, [0, 2, 1]] * np.array([1.0, -1.0, 1.0]))
         mesh.point_data.active_normals_name = "Normals"
     return mesh
 

@@ -13,6 +13,7 @@ Via and PTH drill holes are then cut out.
 from __future__ import annotations
 
 import math
+import threading
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -106,28 +107,52 @@ def net_layer_copper(snap: BoardSnapshot, net: str, layer: int,
 def drill_holes(snap: BoardSnapshot, net: str, layer: int,
                 quad_segs: int = CIRCLE_QUAD_SEGS) -> Optional[BaseGeometry]:
     """Drill holes of the net's vias and through-hole pads that pass through ``layer``."""
-    holes = []
+    round_holes: List[Tuple[float, float, float]] = []      # x, y, radius
+    slots: List[Tuple[float, float, float, float, float]] = []  # x0, y0, x1, y1, radius
     _, vias, pads, _ = snap.items_on_net(net)
     for v in vias:
         if layer in v.layers and v.drill_mm > 0:
-            holes.append(shapely.Point(v.position).buffer(v.drill_mm / 2.0,
-                                                          quad_segs=quad_segs))
+            round_holes.append((*v.position, v.drill_mm / 2.0))
     for p in pads:
         if p.pad_type == "pth" and layer in p.shapes:
             dx, dy = p.drill_mm
             if dx <= 0:
                 continue
             if abs(dx - dy) < 1e-6:
-                holes.append(shapely.Point(p.position).buffer(dx / 2.0,
-                                                              quad_segs=quad_segs))
+                round_holes.append((*p.position, dx / 2.0))
             else:  # oblong slot
                 r = min(dx, dy) / 2.0
                 half = (max(dx, dy) - min(dx, dy)) / 2.0
                 ux, uy = slot_axis(p)
                 x, y = p.position
-                seg = [(x - half * ux, y - half * uy), (x + half * ux, y + half * uy)]
-                holes.append(LineString(seg).buffer(r, quad_segs=quad_segs))
-    return shapely.union_all(holes) if holes else None
+                slots.append((x - half * ux, y - half * uy, x + half * ux, y + half * uy, r))
+    if not round_holes and not slots:
+        return None
+    # Through holes are the same on every layer they pass, so their union is made once.
+    key = (tuple(round_holes), tuple(slots), quad_segs)
+    with _holes_lock:
+        hit = _holes_cache.get(key)
+    if hit is not None:
+        return hit
+    holes = []
+    if round_holes:
+        a = np.asarray(round_holes)
+        holes.extend(shapely.buffer(shapely.points(a[:, :2]), a[:, 2], quad_segs=quad_segs))
+    if slots:
+        s = np.asarray(slots)
+        holes.extend(shapely.buffer(shapely.linestrings(s[:, :4].reshape(-1, 2, 2)), s[:, 4],
+                                    quad_segs=quad_segs))
+    geom = shapely.union_all(holes)
+    with _holes_lock:
+        if len(_holes_cache) >= _HOLES_CACHE_SIZE:
+            _holes_cache.pop(next(iter(_holes_cache)))
+        _holes_cache[key] = geom
+    return geom
+
+
+_HOLES_CACHE_SIZE = 64
+_holes_cache: Dict[tuple, BaseGeometry] = {}
+_holes_lock = threading.Lock()
 
 
 SLOT_SHAPE_ASPECT = 1.05   # a pad this much longer than wide shows which way its slot runs
@@ -162,9 +187,10 @@ def slot_axis(p: Pad) -> Tuple[float, float]:
 def net_copper(snap: BoardSnapshot, net: str,
                progress: ProgressReporter = NULL) -> Dict[int, BaseGeometry]:
     """Copper geometry of ``net`` on every copper layer that has any."""
+    from kipi.core.geometry.parallel import pmap
+    layers = snap.stackup.copper
     out: Dict[int, BaseGeometry] = {}
-    for cu in snap.stackup.copper:
-        g = net_layer_copper(snap, net, cu.id)
+    for cu, g in zip(layers, pmap(lambda cu: net_layer_copper(snap, net, cu.id), layers)):
         if not g.is_empty:
             out[cu.id] = g
             progress.debug(f"  {net} / {cu.name}: {g.area:.2f} mm^2")

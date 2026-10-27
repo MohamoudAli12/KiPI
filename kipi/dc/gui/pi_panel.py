@@ -52,8 +52,7 @@ from kipi.gui.spice_dialog import LINK, import_spice, part_pins, part_values, sp
 from kipi.gui.tooltip_art import add_text, art_tip
 from kipi.gui.unit_spin import UnitSpinBox
 from kipi.dc.pi import vunits
-from kipi.dc.pi.tree import fmt_drop
-from kipi.dc.viz.results import FIELDS, scale_decimals
+from kipi.dc.viz.fields import FIELDS, scale_decimals
 
 NONE = "(none)"
 
@@ -2606,6 +2605,7 @@ class PIPanel(QWidget, PartSelection):
                              f"{v.load_line_mohm:g} mΩ × {v.i_out:.4g} A = "
                              f"{v.v_droop * 1e3:.4g} mV droop, regulating to "
                              f"{v.v_target:.5f} V (set {v.v_set:g} V)")
+        from kipi.dc.pi.tree import fmt_drop
         for l in tree.loads:
             if l.pin_groups:
                 notes.append(f"<b>{html.escape(l.name)}</b> pin groups:")

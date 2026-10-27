@@ -254,6 +254,17 @@ def _field_text(field) -> str:
             return ""
 
 
+def _fp_fields(fp) -> Dict[str, str]:
+    """A footprint's fields other than Reference and Value (MPN, PI_I, ...), name -> text;
+    empty if this kicad-python can't list them."""
+    from kipy.board_types import Field
+    try:
+        return {f.name: _field_text(f) for f in fp.texts_and_fields
+                if isinstance(f, Field) and f.name not in ("Reference", "Value")}
+    except Exception:  # noqa: BLE001 - the fields are a nicety
+        return {}
+
+
 def _footprint_name(fp) -> str:
     """'library:name' of a footprint instance, or "" if this kicad-python can't tell."""
     try:
@@ -465,7 +476,7 @@ def extract_board(board, refill_zones: bool = False,
                 position=pt(fp.position),
                 side="bottom" if fp.layer == BoardLayer.BL_B_Cu else "top",
                 pad_ids=[p.id.value for p in fpads], footprint=_footprint_name(fp),
-                angle_deg=_fp_angle(fp)))
+                angle_deg=_fp_angle(fp), fields=_fp_fields(fp)))
             for p in fpads:
                 pad_ref[p.id.value] = ref
             kpads.extend(fpads)

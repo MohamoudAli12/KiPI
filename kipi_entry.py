@@ -18,9 +18,6 @@ def main() -> int:
         return code
     from kipi.gui import app as kipi_app
     from kipi.gui.app import run, setup_logging
-    from kipi.sources.kicad_ipc.extract import ExtractionError, connect
-    from kipi.sources.kicad_ipc.source import InstalledKiCad, KiCadLiveSource
-    from kipi.core.progress import ProgressReporter
 
     setup_logging(console=False)
     # KiCad captures plugin stdout/stderr through a pipe it does not always drain; a full
@@ -34,24 +31,20 @@ def main() -> int:
     if instance is None:        # another KiPI is open; it was brought to the front
         return 0
     try:
-        # The welcome screen first, so the click in KiCad is answered at once (#55).
-        _app, splash = kipi_app.start_splash()
-        # Before anything loads MKL: PARDISO is not in requirements.txt, so KiPI offers
-        # it here, with an opt-out, rather than KiCad installing it unasked (#129).
-        from kipi.gui import pardiso_setup
-        pardiso_setup.startup(splash)
-        kipi_app.set_status(splash, "Connecting to KiCad…")
-        try:
+        def connect_kicad():
+            # Before anything loads MKL: finish a PARDISO removal asked for last time (#129).
+            from kipi.gui import pardiso_setup
+            pardiso_setup.startup()
+            from kipi.core.progress import ProgressReporter
+            from kipi.sources.kicad_ipc.extract import connect
+            from kipi.sources.kicad_ipc.source import InstalledKiCad, KiCadLiveSource
             kicad, board = connect(progress=ProgressReporter())
-        except ExtractionError as e:
-            from qtpy.QtWidgets import QMessageBox
-            if splash is not None:
-                splash.close()
-            QMessageBox.critical(None, "KiPI", f"{e}\n\nLog: {kipi_app.LOG_PATH}")
-            return 1
-        source = KiCadLiveSource(kicad, board)
-        return run(source=source, tool=InstalledKiCad(source), instance=instance,
-                   splash=splash)
+            source = KiCadLiveSource(kicad, board)
+            return source, InstalledKiCad(source)
+
+        # The window first, so the click in KiCad is answered at once (#55); KiPI connects
+        # to KiCad once it is showing.
+        return run(instance=instance, connect=connect_kicad)
     finally:
         instance.release()
 

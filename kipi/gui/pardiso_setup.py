@@ -1,14 +1,10 @@
-"""PARDISO in the KiCad plugin's environment: offered on first start, with an opt-out (#129).
+"""PARDISO in the KiCad plugin's environment, and turning it off.
 
-KiCad installs ``requirements.txt`` into the plugin's environment by itself, on every plugin
-reload (``pip install --no-input --only-binary :all: -r requirements.txt``), with no way for
-a plugin to show anything first. PARDISO (pypardiso and Intel MKL, several hundred MB) is
-therefore not in ``requirements.txt``: KiCad would put it back on every reload, leaving no
-way to opt out. Instead KiPI asks the first time it opens on a computer that can have it,
-listing what it would install, ticked by default, and installs it with the environment's
-own pip. KiCad only ever installs, so it stays through reloads. *Recreate Plugin
-Environment* removes it, and KiPI asks again (with the earlier choice ticked) unless it was
-turned down.
+PARDISO (pypardiso and Intel MKL) is in ``requirements.txt`` where MKL is published
+(Windows and Linux, x86-64), so KiCad installs it with the rest of the plugin's environment
+(``pip install --no-input --only-binary :all: -r requirements.txt``). *About → Manage
+dependencies…* turns it off or adds it back. KiCad puts it back on every plugin reload, so
+turned off it is also left unused (KIPI_DIRECT_SOLVER=superlu).
 
 The choice is kept in KiPI's QSettings, outside the environment, so it outlives the
 environment. Removing PARDISO waits for the next start, before anything has loaded MKL
@@ -78,11 +74,6 @@ def packages() -> List[deps.Package]:
     included), else just pypardiso by name."""
     plan = deps.manifest_plan(deps.platform_key())
     return (plan.pardiso if plan is not None else []) or [deps.Package(deps.PARDISO, "")]
-
-
-def should_offer(choice: Optional[str], is_installed: bool, can_install: bool) -> bool:
-    """Ask on start when it can be had, is not there, and was not turned down."""
-    return can_install and not is_installed and choice != "off"
 
 
 def _installer(on_line: Callable[[str], None]) -> Installer:
@@ -221,35 +212,23 @@ def _off_unless_chosen() -> None:
         os.environ["KIPI_DIRECT_SOLVER"] = "superlu"
 
 
-def startup(splash=None) -> None:
+def startup() -> None:
     """On the plugin's start, before anything loads MKL: finish a removal asked for last
-    time, and offer PARDISO if it has not been decided. Never raises; KiPI goes on with
+    time, and leave PARDISO unused if it was turned off. Never raises; KiPI goes on with
     SciPy's solver whatever happens here."""
     try:
-        _startup(splash)
+        _startup()
     except Exception:       # noqa: BLE001 - an optional solver must never stop KiPI
         log.exception("PARDISO setup failed")
 
 
-def _startup(splash) -> None:
+def _startup() -> None:
     can, why = available()
     if not can:
         log.info("PARDISO not offered: %s", why)
         return
     _remove_pending(None)
-    choice = _settings().value(CHOICE_KEY)
-    if not should_offer(choice, installed(), can):
-        _off_unless_chosen()
-        return
-    if splash is not None:
-        splash.hide()           # it stays on top of everything, the dialog included
-    try:
-        dlg = PardisoDialog(None, is_installed=False, ticked=choice != "off")
-        if dlg.exec() == QDialog.Accepted:      # closed instead: ask again next time
-            _apply(None, dlg.wanted(), was_installed=False, now=True)
-    finally:
-        if splash is not None:
-            splash.show()
+    _off_unless_chosen()
 
 
 def _apply(parent, want: bool, was_installed: bool, now: bool) -> None:

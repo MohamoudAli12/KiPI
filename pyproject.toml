@@ -51,7 +51,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # Talking to a running KiCad: the plugin, `python -m kipi --dump`, and KIPI_HOST=plugin.
-kicad = ["kicad-python>=0.7.1"]
+# The plugin also gets PARDISO where Intel MKL is published; the launcher asks first.
+kicad = ["kicad-python>=0.7.1",
+         'pypardiso>=0.4.6; (sys_platform == "win32" or sys_platform == "linux") and (platform_machine == "AMD64" or platform_machine == "x86_64")']
 dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff==0.17.0"]  # keep in sync with requirements-dev.txt
 
 [project.urls]

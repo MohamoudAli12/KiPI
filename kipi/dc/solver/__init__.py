@@ -3,14 +3,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import TYPE_CHECKING, Iterable, List, Optional
 
-from kipi.core.mesh.mesher import NetMesh, mesh_nets
 from kipi.core.model.board import BoardSnapshot, Pad
 from kipi.core.progress import NULL, ProgressReporter
-from kipi.dc.solver.fem import Solution, SolveError, solve
-from kipi.dc.solver.post import Fields, compute_fields
 from kipi.dc.solver.setup import CurrentLoad, NetProblem, SeriesLink, SolveSettings, VoltageSource
+
+if TYPE_CHECKING:
+    from kipi.core.mesh.mesher import NetMesh
+    from kipi.dc.solver.fem import Solution
+    from kipi.dc.solver.post import Fields
+
+# The mesher, solver and post-processing load SciPy; they are imported when first used, so
+# that the setup's dataclasses (kipi.dc.solver.setup, which the setup panels read) load at
+# KiPI's start without them.
+_LAZY = {"NetMesh": "kipi.core.mesh.mesher", "mesh_nets": "kipi.core.mesh.mesher",
+         "Solution": "kipi.dc.solver.fem", "SolveError": "kipi.dc.solver.fem",
+         "solve": "kipi.dc.solver.fem", "Fields": "kipi.dc.solver.post",
+         "compute_fields": "kipi.dc.solver.post"}
+
+
+def __getattr__(name: str):
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    value = getattr(importlib.import_module(module), name)
+    globals()[name] = value
+    return value
 
 __all__ = ["NetResult", "run", "pads_for", "NetProblem", "VoltageSource", "CurrentLoad",
            "SeriesLink", "SolveSettings", "SolveError"]
@@ -25,6 +45,9 @@ class NetResult:
 
 def run(snap: BoardSnapshot, problem: NetProblem,
         progress: ProgressReporter = NULL) -> NetResult:
+    from kipi.core.mesh.mesher import mesh_nets
+    from kipi.dc.solver.fem import solve
+    from kipi.dc.solver.post import compute_fields
     s = problem.settings
     with progress.timed(f"Meshing {problem.net}"):
         mesh = mesh_nets(snap, problem.nets, problem.terminal_pad_ids(), name=problem.net,
@@ -56,5 +79,6 @@ def pads_for(snap: BoardSnapshot, net: str, reference: str,
     out = [p for p in out if p.shapes or p.number not in shaped]
     if not out:
         which = f" pins {sorted(wanted)}" if wanted else ""
+        from kipi.dc.solver.fem import SolveError
         raise SolveError(f"{reference}{which} has no pads on net {net}")
     return sorted(out, key=lambda p: (len(p.number), p.number))

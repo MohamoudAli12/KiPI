@@ -192,6 +192,9 @@ class Footprint:
     # Rotation on the board, degrees counter-clockwise as KiCad shows it. None in
     # snapshots saved before it was recorded.
     angle_deg: Optional[float] = None
+    # Its other fields, name -> text (MPN, PI_I, ...), for the rail auto-fill; empty in
+    # snapshots saved before they were recorded.
+    fields: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

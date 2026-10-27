@@ -543,6 +543,14 @@ def _field(fp: Node, name: str) -> str:
     return ""
 
 
+def _fields(fp: Node) -> Dict[str, str]:
+    """A footprint's fields other than Reference and Value (MPN, PI_I, ...), name -> text.
+    Before KiCad 8 they were not kept on the board."""
+    return {p[1]: p[2] for p in children(fp, "property")
+            if len(p) > 2 and type(p[1]) is str and type(p[2]) is str
+            and p[1] not in ("Reference", "Value")}
+
+
 def _pad_layer_names(node: Node, cu: Dict[int, str]) -> List[str]:
     """The copper layers a pad is on, by canonical name."""
     out: List[str] = []
@@ -602,7 +610,8 @@ def read_footprints(root: Node, cu: Dict[int, str], nets: Nets, max_error: float
             id=uuid(fp), reference=ref, value=_field(fp, "Value"), position=pos,
             side="bottom" if value(fp, "layer") == "B.Cu" else "top",
             pad_ids=[p.id for p in fp_pads],
-            footprint=fp[1] if len(fp) > 1 and type(fp[1]) is str else "", angle_deg=angle))
+            footprint=fp[1] if len(fp) > 1 and type(fp[1]) is str else "", angle_deg=angle,
+            fields=_fields(fp)))
         drawn.extend((node, fp_frame) for node in drawn_items(fp, "fp_"))
     progress.info(f"{len(footprints)} footprints, {len(pads)} pads")
     return footprints, pads, drawn, trim
