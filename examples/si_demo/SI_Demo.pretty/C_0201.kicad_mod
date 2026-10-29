@@ -1,0 +1,13 @@
+(footprint "C_0201"
+	(version 20241229)
+	(generator "kipi_si_demo")
+	(layer "F.Cu")
+	(descr "Capacitor 0201 (0603 Metric)")
+	(property "Reference" "REF**" (at 0 -1.15 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
+	(property "Value" "C_0201" (at 0 1.15 0) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
+	(attr smd)
+	(fp_rect (start -0.45 -0.15) (end 0.45 0.15) (stroke (width 0.1) (type solid)) (fill no) (layer "F.Fab") (uuid "c2315efc-4a2c-55ad-aad9-1ccebf21686d"))
+	(fp_rect (start -0.53 -0.23) (end 0.53 0.23) (stroke (width 0.05) (type solid)) (fill no) (layer "F.CrtYd") (uuid "2367f6b6-8f60-5fbd-bf66-46f1408e29ff"))
+	(pad "1" smd roundrect (at -0.3 0) (size 0.3 0.3) (roundrect_rratio 0.25) (layers "F.Cu" "F.Mask" "F.Paste") (uuid "d607b0cc-6390-53dc-9c30-05f84a708039"))
+	(pad "2" smd roundrect (at 0.3 0) (size 0.3 0.3) (roundrect_rratio 0.25) (layers "F.Cu" "F.Mask" "F.Paste") (uuid "5bc73680-f259-591c-bbc9-03950276ef81"))
+)

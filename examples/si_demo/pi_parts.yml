@@ -1,0 +1,11 @@
+kipi_parts: 1
+parts:
+  'ClockRx':    # U3
+    supplies:
+      - {name: '+3V3', pins: ['3'], current_a: null}
+  'PWR_IN':    # J3
+    supplies:
+      - {name: '+3V3', pins: ['1'], current_a: null}
+  'DRAM':    # U2
+    supplies:
+      - {name: '+3V3', pins: ['9'], current_a: null}

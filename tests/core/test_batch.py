@@ -81,3 +81,15 @@ def test_re_adding_replaces_and_recolor_marks_dirty():
     assert (chunk.build().cell_data["rgb"] == [0, 0, 255]).all()
     b.set_color("A", ("cu", 3), BLUE)
     assert b.take_dirty() == []
+
+
+
+def test_meshes_of_a_few_nets_leave_the_chunks_alone():
+    b = MeshBatcher()
+    b.add("IN", ("cu", 3), plane(2), RED)
+    b.add("OUT", ("cu", 3), plane(3, x=5), BLUE)
+    b.add("IN", ("via", -1), plane(2), RED)
+    b.take_dirty()
+    out = b.meshes_of(["IN", "NONE"])
+    assert set(out) == {("cu", 3), ("via", -1)} and out[("cu", 3)].n_cells == 8
+    assert b.take_dirty() == [] and b.chunks(("cu", 3))[0].build().n_cells == 8 + 18

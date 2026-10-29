@@ -1,0 +1,13 @@
+(footprint "PinHeader_1x02"
+	(version 20241229)
+	(generator "kipi_si_demo")
+	(layer "F.Cu")
+	(descr "Power input, 1x02 2.54 mm")
+	(property "Reference" "REF**" (at 0 -3.54 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
+	(property "Value" "PinHeader_1x02" (at 0 3.54 0) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
+	(attr through_hole)
+	(fp_rect (start -1.27 -2.54) (end 1.27 2.54) (stroke (width 0.1) (type solid)) (fill no) (layer "F.Fab") (uuid "ba4a3a4f-7287-5de1-9680-bbc5761c31a7"))
+	(fp_rect (start -1.52 -2.79) (end 1.52 2.79) (stroke (width 0.05) (type solid)) (fill no) (layer "F.CrtYd") (uuid "7b808582-fcff-59d4-861a-d5918dc874d7"))
+	(pad "1" thru_hole rect (at 0 0) (size 1.7 1.7) (drill 1) (layers "*.Cu" "*.Mask") (uuid "787ee749-4b63-5c3d-a8e9-3f454a934b0c"))
+	(pad "2" thru_hole circle (at 0 2.54) (size 1.7 1.7) (drill 1) (layers "*.Cu" "*.Mask") (uuid "e724b023-a823-51fc-93ef-f58270637dc5"))
+)

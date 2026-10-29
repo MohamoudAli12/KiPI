@@ -12,15 +12,26 @@ from __future__ import annotations
 
 from typing import Optional
 
-from qtpy.QtCore import QSettings
-from qtpy.QtGui import QColor, QPalette
-from qtpy.QtWidgets import QApplication
+from qtpy.QtCore import QSettings, Qt
+from qtpy.QtGui import QColor, QPainter, QPalette, QPen
+from qtpy.QtWidgets import QApplication, QProxyStyle, QStyle
 
 DARK, LIGHT = "dark", "light"
 DEFAULT = DARK
 _KEY = "appearance/theme"
 
 _startup: Optional[QPalette] = None       # the palette Qt started with, for light mode
+_style: Optional["_IndicatorStyle"] = None   # kept: Qt does not own a Python style
+
+# Each mode's Solve button: green, so the action the setup leads to stands out (grey while
+# it cannot be pressed).
+SOLVE_BUTTON_STYLE = (
+    "QPushButton { font-weight: bold; padding: 6px 14px; color: white; "
+    "background: #2e8b3e; border: 1px solid #1f6b2c; border-radius: 4px; }"
+    "QPushButton:hover { background: #37a34a; }"
+    "QPushButton:pressed { background: #23702f; }"
+    "QPushButton:disabled { color: palette(mid); background: palette(button); "
+    "border: 1px solid palette(mid); }")
 
 
 def _settings() -> QSettings:
@@ -58,6 +69,42 @@ def dark_palette() -> QPalette:
     return pal
 
 
+class _IndicatorStyle(QProxyStyle):
+    """Fusion with a light outline round check boxes and radio buttons in dark mode:
+    Fusion outlines them in a shade of the window colour, next to invisible on a dark
+    window."""
+
+    dark = False
+    _BOXES = (QStyle.PE_IndicatorCheckBox, QStyle.PE_IndicatorItemViewItemCheck)
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        super().drawPrimitive(element, option, painter, widget)
+        radio = element == QStyle.PE_IndicatorRadioButton
+        if not self.dark or not (radio or element in self._BOXES):
+            return
+        r = option.rect.adjusted(1, 1, -2, -2) if radio else option.rect.adjusted(0, 0, -1, -1)
+        if r.width() < 4 or r.height() < 4:
+            return                      # a hidden indicator (the mode switch's)
+        on = bool(option.state & QStyle.State_Enabled)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, radio)
+        painter.setPen(QPen(QColor("#f0f0f0" if on else "#808080"), 1))
+        painter.setBrush(Qt.NoBrush)
+        if radio:
+            painter.drawEllipse(r)
+        else:
+            painter.drawRoundedRect(r, 2, 2)
+        painter.restore()
+
+
+def _indicator_style(app: QApplication) -> "_IndicatorStyle":
+    global _style
+    if not isinstance(app.style(), _IndicatorStyle):
+        _style = _IndicatorStyle(app.style().name())
+        app.setStyle(_style)
+    return app.style()
+
+
 def apply(name: Optional[str] = None, app: Optional[QApplication] = None) -> str:
     """Show ``name`` (default: the saved theme) on ``app``; returns the theme shown."""
     global _startup
@@ -65,6 +112,7 @@ def apply(name: Optional[str] = None, app: Optional[QApplication] = None) -> str
     name = name or saved()
     if _startup is None:
         _startup = QPalette(app.palette())
+    _indicator_style(app).dark = name == DARK
     app.setPalette(dark_palette() if name == DARK else _startup)
     # A widget with its own style sheet (the bold Solve buttons, the log's monospace
     # font) took its colours when it was first shown and ignores a new palette; setting

@@ -48,6 +48,9 @@ from kipi.noise.model import (
     Aggressor, NoiseSettings, Victim, aggressor_from_dict, settings_from_dict as noise_settings,
     victim_from_dict,
 )
+from kipi.si.model import (
+    Channel as SIChannel, SISettings, channel_from_dict, settings_from_dict as si_settings,
+)
 
 FORMAT_VERSION = 2
 VRM_KINDS = ("source", "ldo", "smps", "isolated")
@@ -410,6 +413,9 @@ class PISetup:
     # Nets ticked in the Board panel (the nets in scope). None = never chosen, so the
     # GUI guesses the main power and ground planes; [] = the user unticked them all.
     nets: Optional[List[str]] = None
+    # The same for Signal Integrity mode, which has its own: its data nets are no part of
+    # the power analyses' scope. None = never chosen (the channels' nets, or the pairs).
+    si_nets: Optional[List[str]] = None
     # DC: net groups with any of these nets are left out of the solve (see active_setup).
     excluded_nets: List[str] = field(default_factory=list)
     # Stackup thicknesses edited in the Stackup pane (kipi.core.model.stackup.to_setup);
@@ -427,6 +433,9 @@ class PISetup:
     aggressors: List[Aggressor] = field(default_factory=list)
     victims: List[Victim] = field(default_factory=list)
     noise: NoiseSettings = field(default_factory=NoiseSettings)
+    # Signal Integrity
+    si_channels: List[SIChannel] = field(default_factory=list)
+    si: SISettings = field(default_factory=SISettings)
 
     def pin_nets(self) -> set:
         """Nets the VRMs, loads, series links and probes have pins on."""
@@ -509,6 +518,7 @@ class PISetup:
             html_report=bool(d.get("html_report", False)),
             report_format=report_format(d.get("report_format")),
             nets=list(d["nets"]) if d.get("nets") is not None else None,
+            si_nets=list(d["si_nets"]) if d.get("si_nets") is not None else None,
             excluded_nets=list(d.get("excluded_nets", [])),
             stackup=d.get("stackup") or None,
             legacy_laminate_k=float(d.get("thermal", {}).get("laminate_k_w_mk") or 0.0),
@@ -533,6 +543,8 @@ class PISetup:
                         for a in d.get("aggressors", [])],
             victims=[victim_from_dict(v, pin) for v in d.get("victims", [])],
             noise=noise_settings(d.get("noise", {})),
+            si_channels=[channel_from_dict(c) for c in d.get("si_channels", [])],
+            si=si_settings(d.get("si")),
         )
 
     def save(self, path) -> Path:

@@ -30,7 +30,8 @@ DEFAULT_STACKUP_NOTE = (f"Stackup: the board's own is incomplete, so a default "
                         "1/2 oz inner copper, FR4 between)")
 
 # One stackup layer, top to bottom: ("cu", copper layer id, thickness_mm, "", 0.0) or
-# ("diel", -1, thickness_mm, material, epsilon_r).
+# ("diel", -1, thickness_mm, material, epsilon_r), optionally followed by the dielectric's
+# loss tangent.
 LayerSpec = Tuple[str, int, float, str, float]
 
 
@@ -151,7 +152,7 @@ def build_stackup(entries: Sequence[LayerSpec], cu_ids: Sequence[int], names: Di
     dielectrics: List[DielectricLayer] = []
     last_cu = -1
     pending_diel: List[DielectricLayer] = []
-    for kind, lid, t, mat, er in entries:
+    for kind, lid, t, mat, er, *more in entries:
         z -= t
         if kind == "cu":
             copper.append(CopperLayer(id=lid, name=names.get(lid, str(lid)), index=len(copper),
@@ -161,7 +162,8 @@ def build_stackup(entries: Sequence[LayerSpec], cu_ids: Sequence[int], names: Di
             pending_diel = []
             last_cu = lid
         else:
-            d = DielectricLayer(thickness_mm=t, material=mat, epsilon_r=er, above_layer=last_cu)
+            d = DielectricLayer(thickness_mm=t, material=mat, epsilon_r=er, above_layer=last_cu,
+                                loss_tangent=float(more[0]) if more else 0.0)
             dielectrics.append(d)
             pending_diel.append(d)
 
@@ -202,6 +204,11 @@ def dielectric_er(stackup: Stackup) -> List[float]:
     return [e.epsilon_r for e in stack_order(stackup) if isinstance(e, DielectricLayer)]
 
 
+def dielectric_tand(stackup: Stackup) -> List[float]:
+    """Each dielectric's loss tangent (0 where the stackup gives none), top to bottom."""
+    return [e.loss_tangent for e in stack_order(stackup) if isinstance(e, DielectricLayer)]
+
+
 def dielectric_k(stackup: Stackup) -> List[float]:
     """The dielectrics' thermal conductivities set in KiPI (0: their material's), top to
     bottom."""
@@ -216,11 +223,12 @@ def dielectric_materials(stackup: Stackup) -> List[str]:
 def restack(stackup: Stackup, new_mm: Sequence[float], er: Optional[Sequence[float]] = None,
             edited: bool = True, materials: Optional[Sequence[str]] = None,
             k: Optional[Sequence[float]] = None,
-            coating_mm: Optional[Sequence[float]] = None) -> Stackup:
+            coating_mm: Optional[Sequence[float]] = None,
+            tand: Optional[Sequence[float]] = None) -> Stackup:
     """``stackup`` with the layers' thicknesses set to ``new_mm`` (in :func:`stack_order`),
     restacked from z = 0 at the bottom, and the dielectrics' εr, material names and thermal
     conductivities set to ``er``, ``materials`` and ``k`` (top to bottom) when given, and
-    the coatings' thicknesses to ``coating_mm``."""
+    the coatings' thicknesses to ``coating_mm``, and the loss tangents to ``tand``."""
     order = stack_order(stackup)
     if len(new_mm) != len(order):
         raise ValueError(f"{len(new_mm)} thicknesses for {len(order)} layers")
@@ -228,6 +236,7 @@ def restack(stackup: Stackup, new_mm: Sequence[float], er: Optional[Sequence[flo
     ers = list(dielectric_er(stackup) if er is None else er)
     mats = list(dielectric_materials(stackup) if materials is None else materials)
     ks = list(dielectric_k(stackup) if k is None else k)
+    tds = list(dielectric_tand(stackup) if tand is None or len(tand) != n_diel else tand)
     if len(ers) != n_diel or len(mats) != n_diel or len(ks) != n_diel:
         raise ValueError(f"{len(ers)} εr values, {len(mats)} materials and {len(ks)} k values "
                          f"for {n_diel} dielectrics")
@@ -237,6 +246,7 @@ def restack(stackup: Stackup, new_mm: Sequence[float], er: Optional[Sequence[flo
     ers.reverse()
     mats.reverse()
     ks.reverse()
+    tds.reverse()
     z = sum(new_mm)
     copper: List[CopperLayer] = []
     dielectrics: List[DielectricLayer] = []
@@ -246,7 +256,8 @@ def restack(stackup: Stackup, new_mm: Sequence[float], er: Optional[Sequence[flo
             copper.append(replace(e, thickness_mm=float(t), z_bottom_mm=z))
         else:
             dielectrics.append(replace(e, thickness_mm=float(t), epsilon_r=float(ers.pop()),
-                                       material=str(mats.pop()), k_w_mk=float(ks.pop())))
+                                       material=str(mats.pop()), k_w_mk=float(ks.pop()),
+                                       loss_tangent=float(tds.pop())))
     coatings = [replace(c, thickness_mm=float(t)) for c, t in zip(stackup.coatings, coat)]
     return Stackup(copper=copper, dielectrics=dielectrics, board_thickness_mm=sum(new_mm),
                    from_board=stackup.from_board, edited=edited, coatings=coatings)
@@ -262,6 +273,7 @@ def to_setup(stackup: Stackup) -> Dict:
             "dielectric_er": dielectric_er(stackup),
             "dielectric_material": dielectric_materials(stackup),
             "dielectric_k": dielectric_k(stackup),
+            "dielectric_tand": dielectric_tand(stackup),
             "coating_mm": {c.name: c.thickness_mm for c in stackup.coatings}}
 
 
@@ -293,11 +305,14 @@ def from_setup(stackup: Stackup, saved: Optional[Dict]) -> Tuple[Optional[Stacku
     mats = [str(m) for m in mats] if mats is not None and len(mats) == n_diel else None
     k = saved.get("dielectric_k")
     k = [float(x) for x in k] if k is not None and len(k) == n_diel else None
+    tand = saved.get("dielectric_tand")
+    tand = [float(x) for x in tand] if tand is not None and len(tand) == n_diel else None
     coat = saved.get("coating_mm") or {}
     coat_mm = [float(coat.get(c.name, c.thickness_mm)) for c in stackup.coatings]
     if not all(t > 0 for t in coat_mm):
         return None, "a saved thickness is not above zero"
-    return restack(stackup, values, er, materials=mats, k=k, coating_mm=coat_mm), ""
+    return restack(stackup, values, er, materials=mats, k=k, coating_mm=coat_mm,
+                   tand=tand), ""
 
 
 def with_dielectric_k(stackup: Stackup, k_w_mk: float) -> Stackup:

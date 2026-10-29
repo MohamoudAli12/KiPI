@@ -73,7 +73,7 @@ def no_3d(monkeypatch):
             self._nets = []
             self.included_nets = set()
             self.hide_non_included = False
-            self.models_shown = self.models_wanted = True
+            self.models_shown = self.models_wanted = False      # off at start
             self.shown = {}
 
         def set_included_nets(self, nets):

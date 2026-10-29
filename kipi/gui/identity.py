@@ -55,6 +55,8 @@ def make_app(argv: Optional[List[str]] = None):
     app = QApplication.instance() or QApplication(sys.argv if argv is None else argv)
     app.setApplicationName(NAME)
     app.setDesktopFileName(DESKTOP_NAME)
+    from kipi.gui.wheel_guard import install
+    install(app)                     # the wheel scrolls panels, not the fields in them
     icon = app_icon()
     if icon is not None:
         app.setWindowIcon(icon)

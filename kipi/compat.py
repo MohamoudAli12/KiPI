@@ -63,7 +63,8 @@ _LEGACY_GLOBALS = {
                  ("numeric", "_frombuffer"))
 }
 # Packages whose classes (not functions) a results pickle may name.
-_LEGACY_PACKAGES = ("kipi.core.", "kipi.dc.", "kipi.ac.", "kipi.noise.", "pyvista.",
+_LEGACY_PACKAGES = ("kipi.core.", "kipi.dc.", "kipi.ac.", "kipi.noise.", "kipi.si.",
+                    "pyvista.",
                     "scipy.spatial.")
 _PATHS = ("Path", "PosixPath", "WindowsPath", "PurePath", "PurePosixPath", "PureWindowsPath")
 

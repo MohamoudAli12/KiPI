@@ -36,7 +36,7 @@ def load_results(path) -> dict:
         raise ValueError("These results are from a newer KiPI")
     kind = payload.get("kind")
     if kind != RESULTS_KIND:
-        mode = "AC" if kind == "ac" else "DC"
+        mode = results_io.mode_name(kind)
         raise ValueError(f"This holds {mode} results: open it in {mode} mode")
     from kipi.dc.pi.model import PISetup
     payload["results"] = payload.pop("data")["results"]

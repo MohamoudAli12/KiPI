@@ -139,7 +139,9 @@ def read_stackup(root: Node, names: Dict[int, str], progress: ProgressReporter,
             t = sum(number(s, "thickness") for s in subs)
             er = combined_epsilon_r([(number(s, "thickness"), number(s, "epsilon_r"))
                                      for s in subs])
-            entries.append(("diel", -1, t, value(subs[0], "material", "") or "", er))
+            tand = sum(number(s, "thickness") * number(s, "loss_tangent") for s in subs)
+            entries.append(("diel", -1, t, value(subs[0], "material", "") or "", er,
+                            tand / t if t > 0 else 0.0))
     return build_stackup(entries, cu_ids, names, progress, assumed, coatings)
 
 
@@ -551,6 +553,35 @@ def _fields(fp: Node) -> Dict[str, str]:
             and p[1] not in ("Reference", "Value")}
 
 
+def _dnp(fp: Node) -> bool:
+    """KiCad's do-not-populate: ``(attr smd dnp)`` since KiCad 7."""
+    a = child(fp, "attr")
+    return a is not None and "dnp" in atoms(a)
+
+
+def _variant_dnp(fp: Node) -> Dict[str, bool]:
+    """KiCad 10's assembly variants' DNP where it differs from the footprint's own:
+    ``(variant (name "X") (dnp yes) ...)``."""
+    out = {}
+    for v in children(fp, "variant"):
+        name = value(v, "name")
+        if name is not None and child(v, "dnp") is not None:
+            out[name] = flag(v, "dnp")
+    return out
+
+
+def read_variants(root: Node) -> Dict[str, str]:
+    """KiCad 10's assembly variants, name -> description: ``(variants (variant (name "X")
+    (description "...")) ...)`` in the board's header."""
+    out = {}
+    for vs in children(root, "variants"):
+        for v in children(vs, "variant"):
+            name = value(v, "name")
+            if name is not None:
+                out[name] = value(v, "description", "") or ""
+    return out
+
+
 def _pad_layer_names(node: Node, cu: Dict[int, str]) -> List[str]:
     """The copper layers a pad is on, by canonical name."""
     out: List[str] = []
@@ -611,7 +642,7 @@ def read_footprints(root: Node, cu: Dict[int, str], nets: Nets, max_error: float
             side="bottom" if value(fp, "layer") == "B.Cu" else "top",
             pad_ids=[p.id for p in fp_pads],
             footprint=fp[1] if len(fp) > 1 and type(fp[1]) is str else "", angle_deg=angle,
-            fields=_fields(fp)))
+            fields=_fields(fp), dnp=_dnp(fp), variant_dnp=_variant_dnp(fp)))
         drawn.extend((node, fp_frame) for node in drawn_items(fp, "fp_"))
     progress.info(f"{len(footprints)} footprints, {len(pads)} pads")
     return footprints, pads, drawn, trim
@@ -732,7 +763,11 @@ def read_board(path, progress: ProgressReporter = NULL) -> BoardSnapshot:
         board_name=path.name, project_dir=str(path.parent), stackup=stackup,
         nets=nets.all(proj), tracks=tracks, vias=vias, pads=pads, footprints=footprints,
         zones=zones, outline=outline, source="kicad file", kicad_version=gen,
-        source_format="kicad-pcb", assumed=assumed, silkscreen=silkscreen)
+        source_format="kicad-pcb", assumed=assumed, silkscreen=silkscreen,
+        variants=read_variants(root))
+    for f in footprints:                # a variant only its parts name
+        for name in f.variant_dnp:
+            snap.variants.setdefault(name, "")
     progress.info(f"{len(snap.nets)} nets")
     progress.info(f"Read in {time.perf_counter() - t0:.2f} s")
     return snap

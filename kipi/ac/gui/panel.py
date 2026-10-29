@@ -49,6 +49,7 @@ from kipi.gui.sortable import (
     SortItem, make_sortable, reset_sort, resort, set_row, sorted_rows,
 )
 from kipi.gui.spice_dialog import CAPACITOR, import_spice, part_values, spice_text
+from kipi.gui.theme import SOLVE_BUTTON_STYLE
 from kipi.gui.tooltip_art import art_tip
 
 TITLE = "AC setup"
@@ -771,7 +772,7 @@ class ACPanel(QWidget, PartSelection):
         self.cmb_gnd.setToolTip("The ground net the rail is simulated against")
         self.cmb_gnd.currentIndexChanged.connect(self._gnd_changed)
         self.btn_solve = QPushButton("Solve rail", self)
-        self.btn_solve.setStyleSheet("font-weight: bold; padding: 6px;")
+        self.btn_solve.setStyleSheet(SOLVE_BUTTON_STYLE)
         self.btn_solve.setToolTip("Save the setup, then sweep the impedance at every probe on "
                                   "this rail. Problems that stop the solve are listed above "
                                   "in red.")

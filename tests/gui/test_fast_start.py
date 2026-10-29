@@ -93,7 +93,7 @@ def test_panels_built_late_get_the_board_setup_nets_and_dc_result(app, window, t
         assert panel.setup is window.solve_panel.setup
         assert set(panel._nets) == set(window._checked_set())
     assert window.ac_panel.dc_result is tree
-    assert set(window._panels()) == {"dc", "ac", "noise"}
+    assert set(window._panels()) == {"dc", "ac", "noise", "si"}
 
 
 def test_a_source_given_later_is_read(window, monkeypatch):

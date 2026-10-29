@@ -55,6 +55,11 @@ class CouplingOverlay:
     point_mv: np.ndarray                    # (P,)
     limit_mv: float = 1.0
     note: str = ""
+    # Each segment's copper, to colour the trace itself (not only a line along it): its
+    # width (S,) and the bottom and top of its foil (S, 2), mm. None: lines only. A NaN
+    # in segment_mv draws grey (no value there).
+    widths: Optional[np.ndarray] = None
+    z_spans: Optional[np.ndarray] = None
 
 
 @dataclass

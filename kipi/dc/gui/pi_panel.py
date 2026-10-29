@@ -49,6 +49,7 @@ from kipi.gui.load_model_dialogs import (
 from kipi.gui.report_option import ReportOption
 from kipi.gui.sortable import make_sortable, reset_sort, set_row, sorted_rows
 from kipi.gui.spice_dialog import LINK, import_spice, part_pins, part_values, spice_text
+from kipi.gui.theme import SOLVE_BUTTON_STYLE
 from kipi.gui.tooltip_art import add_text, art_tip
 from kipi.gui.unit_spin import UnitSpinBox
 from kipi.dc.pi import vunits
@@ -1707,7 +1708,7 @@ class PIPanel(QWidget, PartSelection):
         lay.addWidget(self.lbl_errors)
         row = QHBoxLayout()
         self.btn_solve = QPushButton("Solve all", self)
-        self.btn_solve.setStyleSheet("font-weight: bold; padding: 6px;")
+        self.btn_solve.setStyleSheet(SOLVE_BUTTON_STYLE)
         self.btn_solve.setToolTip("Save the setup, then mesh and solve every ticked net group. "
                                   "Problems that stop the solve are listed above in red.")
         self.btn_solve.clicked.connect(lambda: self.solve_requested.emit(self.setup))

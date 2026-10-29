@@ -8,8 +8,10 @@ from typing import List
 ARC_SEGMENTS_PER_CIRCLE = 64
 
 
-def arc_points(start, mid, end, include_start: bool = False) -> List[tuple]:
-    """Discretize a start/mid/end arc (mm tuples) into points, excluding start."""
+def arc_points(start, mid, end, include_start: bool = False,
+               segments_per_circle: int = ARC_SEGMENTS_PER_CIRCLE) -> List[tuple]:
+    """Discretize a start/mid/end arc (mm tuples) into points, excluding start, with
+    ``segments_per_circle`` chords to a full turn."""
     (x1, y1), (x2, y2), (x3, y3) = start, mid, end
     d = 2.0 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
     if abs(d) < 1e-12:
@@ -30,7 +32,7 @@ def arc_points(start, mid, end, include_start: bool = False) -> List[tuple]:
     sweep = ccw_delta(a1, a3)
     if ccw_delta(a1, a2) > sweep:
         sweep -= 2 * math.pi
-    n = max(2, int(math.ceil(abs(sweep) / (2 * math.pi) * ARC_SEGMENTS_PER_CIRCLE)))
+    n = max(2, int(math.ceil(abs(sweep) / (2 * math.pi) * segments_per_circle)))
     pts = [(ux + r * math.cos(a1 + sweep * i / n), uy + r * math.sin(a1 + sweep * i / n))
            for i in range(0 if include_start else 1, n)]
     pts.append(end)

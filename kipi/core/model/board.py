@@ -59,6 +59,9 @@ class DielectricLayer:
     # In-plane thermal conductivity, W/(m K), set in the Stackup window; 0 = the typical
     # value for its material (kipi.dc.thermal.materials).
     k_w_mk: float = 0.0
+    # Loss tangent (tan δ) at 1 GHz, for signal integrity; 0 = the typical value for its
+    # material (kipi.si.materials).
+    loss_tangent: float = 0.0
 
 
 #: Coating kinds, outermost last: a solder mask over the copper, a silkscreen over that.
@@ -195,6 +198,16 @@ class Footprint:
     # Its other fields, name -> text (MPN, PI_I, ...), for the rail auto-fill; empty in
     # snapshots saved before they were recorded.
     fields: Dict[str, str] = field(default_factory=dict)
+    # Do not populate: KiCad's DNP, and its assembly variants' own (variant -> DNP) where
+    # they differ (KiCad 10). False and empty in snapshots saved before they were read.
+    dnp: bool = False
+    variant_dnp: Dict[str, bool] = field(default_factory=dict)
+
+    def is_dnp(self, variant: str = "") -> bool:
+        """Whether the part is left off in assembly variant ``variant`` ("" the board's
+        own DNP)."""
+        return (getattr(self, "variant_dnp", None) or {}).get(variant, self.dnp) \
+            if variant else self.dnp
 
 
 @dataclass
@@ -232,10 +245,18 @@ class BoardSnapshot:
     # What the silkscreens print (#82), by side ("top", "bottom"): graphics and text as
     # polygons. Empty for a side with nothing printed, and in snapshots from before it.
     silkscreen: Dict[str, List[Poly]] = field(default_factory=dict)
+    # KiCad 10's assembly variants, name -> description, in the board's order. Empty
+    # before KiCad 10, for a board with none, and in snapshots from before they were read.
+    variants: Dict[str, str] = field(default_factory=dict)
 
     def __setstate__(self, state):      # results saved before the silkscreen was read
         self.__dict__.update(state)
         self.__dict__.setdefault("silkscreen", {})
+        self.__dict__.setdefault("variants", {})
+
+    def dnp_refs(self, variant: str = "") -> List[str]:
+        """The references of the parts left off in ``variant`` ("" the board's own DNP)."""
+        return [f.reference for f in self.footprints if f.is_dnp(variant)]
 
     @property
     def format_name(self) -> str:

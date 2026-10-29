@@ -93,6 +93,18 @@ class MeshBatcher:
     def __contains__(self, net: str) -> bool:
         return net in self._net_chunks
 
+    def meshes_of(self, nets: Iterable[str]) -> Dict[Category, pv.PolyData]:
+        """One mesh per category of only ``nets``' parts (the chunks are left as they
+        are): to draw a few nets again, apart from the rest."""
+        merged: Dict[Category, Chunk] = {}
+        for net in nets:
+            for c in self._net_chunks.get(net, ()):
+                part = c.parts.get(net)
+                if part is not None:
+                    merged.setdefault(c.category, Chunk(c.category)).parts[net] = part
+        out = {cat: c.build() for cat, c in merged.items()}
+        return {cat: m for cat, m in out.items() if m is not None}
+
     # ---------------------------------------------------------------- edits
     def add(self, net: str, category: Category, mesh: pv.PolyData, color: RGB) -> Chunk:
         """Add one net's mesh in ``category``, replacing any earlier one there."""

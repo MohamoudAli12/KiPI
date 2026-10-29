@@ -114,7 +114,8 @@ def _view():
            _model_board=0.0, _zscale=1.0, _show_models=True, _show_models_result=False,
            _show_board=True, _show_vias=True, _show_pi=True, _pi_markers=[], _pi_actors={},
            _pi_selected=None, _blink_left=0, _blink_timer=_Timer(),
-           _result=None, _result_field="voltage", _chunk_actors={}, _result_actors={},
+           _result=None, _result_field="voltage", _chunk_actors={}, _focus_actors={},
+           _result_actors={},
            _arrow_actors={}, _result_via_actor=None, _board_actors=[], _hidden_layers=set(),
            _coating_actors=[], _show_mask=False, _show_silk=False,
            _show_mask_result=False, _show_silk_result=False, _coupling=None,
@@ -125,7 +126,7 @@ def _view():
     for name in ("set_pi_markers", "_draw_pi_markers", "_remove_pi_actors", "_apply_visibility", "set_zscale",
                  "set_feature_visible", "_place_models", "_selected_markers", "set_pi_selected",
                  "pi_marker_at", "_to_screen", "focus_on", "_start_blink", "_blink_step",
-                 "_paint_selected", "set_coupling", "_remove_coupling_actors",
+                 "_paint_selected", "set_coupling", "_remove_coupling_actors", "_coupling_to_focus",
                  "_draw_coupling", "set_hot_loops", "_remove_hot_loop_actors",
                  "_draw_hot_loops", "set_fields", "_remove_field_actors", "_draw_fields",
                  "_field_arrow_mesh", "_field_step"):
@@ -550,3 +551,27 @@ def test_a_victims_coupling_is_drawn_over_the_copper():
     v.set_coupling(None)
     assert v._coupling_actors == [] and v._coupling_bar is None
     assert ov.title not in v.plotter.scalar_bars
+
+
+def test_an_overlay_colours_the_copper_itself():
+    """An SI overlay with its copper (widths and foil heights) also draws a box over each
+    segment's copper, a little larger than it, so it shows however close the view is; a
+    segment with no value is grey."""
+    from kipi.noise.viz import CouplingOverlay
+    v = _view()
+    segs = np.array([[[0, 0, 1.5], [1, 0, 1.5]], [[1, 0, 1.5], [2, 0, 1.5]]], float)
+    ov = CouplingOverlay("Zdiff − 100 Ω", segs, np.array([-5.0, np.nan]), np.zeros((0, 3)),
+                         np.zeros(0), 15.0, widths=np.array([0.2, 0.2]),
+                         z_spans=np.array([[1.48, 1.52], [1.48, 1.52]]))
+    v.set_coupling(ov)
+    assert len(v._coupling_actors) == 2
+    mapper = v._coupling_actors[1].GetMapper()
+    mapper.Update()
+    cover = pv.wrap(mapper.GetInput())
+    assert cover.n_cells == 12                              # 6 faces a segment
+    x0, x1, y0, y1, z0, z1 = cover.bounds
+    assert y1 - y0 > 0.2 and z0 < 1.48 and z1 > 1.52 and (x0, x1) == (0, 2)
+    assert np.isnan(cover.cell_data["share"][6:]).all()
+    assert mapper.GetLookupTable().GetNanColor()[:3] != (1.0, 1.0, 1.0)
+    v.set_coupling(None)
+    assert v._coupling_actors == []

@@ -7,6 +7,7 @@ import copy
 import html
 import logging
 import math
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -14,13 +15,16 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from qtpy.QtCore import QEvent, QFileSystemWatcher, QSettings, Qt, QTimer
-from qtpy.QtGui import QAction, QColor, QIcon, QPainter, QPalette, QPixmap, QTextCursor
+from qtpy.QtGui import (QAction, QColor, QIcon, QKeySequence, QPainter, QPalette, QPixmap,
+                        QShortcut, QTextCursor)
 from qtpy.QtOpenGLWidgets import QOpenGLWidget
 from qtpy.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
+    QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QSizePolicy, QSlider,
-    QScrollArea, QSplitter, QStackedWidget, QTabWidget, QTextBrowser, QToolBar, QToolButton,
+    QScrollArea, QSplitter, QStackedWidget, QStyle, QTabWidget, QTextBrowser, QToolBar,
+    QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -48,7 +52,28 @@ MAX_AUTO_NETS = 4
 FILE_SETTLE_MS = 800
 # Analysis modes, chosen in the toolbar: (key, label, setup dock title).
 MODES = (("dc", "DC", "PI setup"), ("ac", "AC", "AC setup"),
-         ("noise", "Noise", "Coupled Noise setup"))
+         ("noise", "Noise", "Coupled Noise setup"), ("si", "SI", "Signal Integrity setup"))
+# The modes' groups in the toolbar: DC, AC and Coupled Noise are all power integrity.
+MODE_GROUPS = (("Power Integrity", ("dc", "ac", "noise")), ("Signal Integrity", ("si",)))
+# The mode buttons as one bar of segments per group, the chosen one highlighted.
+MODE_SWITCH_STYLE = """
+QLabel#mode_group { font-weight: bold; }
+QRadioButton {
+    font-weight: bold; padding: 5px 16px; background: palette(button);
+    border: 1px solid palette(mid); border-left: none;
+}
+QRadioButton[segment="first"], QRadioButton[segment="only"] {
+    border-left: 1px solid palette(mid);
+    border-top-left-radius: 5px; border-bottom-left-radius: 5px;
+}
+QRadioButton[segment="last"], QRadioButton[segment="only"] {
+    border-top-right-radius: 5px; border-bottom-right-radius: 5px;
+}
+QRadioButton:hover:!checked { background: palette(midlight); }
+QRadioButton:checked { background: palette(highlight); color: palette(highlighted-text); }
+QRadioButton:disabled { color: palette(mid); }
+QRadioButton::indicator { width: 0px; height: 0px; margin: 0px; border: none; image: none; }
+"""
 # Keyboard shortcuts (#105). The view keys work while the 3D view has the focus, so that
 # Home and letters still reach the lists and text boxes; the rest work anywhere in the
 # window. Each is named in its control's tooltip and in the user guide.
@@ -56,7 +81,7 @@ VIEW_KEYS = {"iso": "Home", "top": "Z", "bottom": "Shift+Z"}
 KEYS = {"open": "Ctrl+O", "reload": "F5", "save": "Ctrl+S", "screenshot": "F12",
         "results": "Ctrl+Shift+O", "stackup": "Ctrl+L", "power_tree": "Ctrl+T",
         "help": "F1", "solve": "Ctrl+Return", "cancel": "Esc", "dc": "Ctrl+1", "ac": "Ctrl+2",
-        "noise": "Ctrl+3"}
+        "noise": "Ctrl+3", "si": "Ctrl+4"}
 
 
 def with_keys(tip: str, keys: str) -> str:
@@ -77,6 +102,24 @@ def _scrolling(widget: QWidget) -> QScrollArea:
     area.setFrameShape(QScrollArea.NoFrame)
     area.setWidget(widget)
     return area
+
+
+class _PageStack(QStackedWidget):
+    """A stacked widget sized by the page it shows, not by its widest page: a hidden wide
+    panel (DC's) would otherwise make the dock scroll sideways in every mode, its right
+    edge (SI's Scan button, say) out of sight."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.currentChanged.connect(lambda _i: self.updateGeometry())
+
+    def sizeHint(self):
+        w = self.currentWidget()
+        return w.sizeHint() if w is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        w = self.currentWidget()
+        return w.minimumSizeHint() if w is not None else super().minimumSizeHint()
 
 
 def _rows(view: QWidget, rows: int) -> None:
@@ -208,6 +251,7 @@ class MainWindow(QMainWindow):
         self._imported_stackup = None     # as read from KiCad, before any edits
         self._pending_stackup = None      # edited while a task ran; applied after
         self.mode = "dc"
+        self._net_filter_on = {"pi": True, "si": True}   # the Nets filter, per family
         # The board's files, watched so a board saved in its editor can be read again.
         self._watcher = QFileSystemWatcher(self)
         self._watcher.fileChanged.connect(self._board_file_changed)
@@ -228,8 +272,9 @@ class MainWindow(QMainWindow):
         self._viewer = None
         self._viewer_waiting: List = []        # run once the 3D view is built
         self._view_actions: List[QAction] = []  # the toolbar's actions of the 3D view
-        self._ac_panel = self._noise_panel = None
+        self._ac_panel = self._noise_panel = self._si_panel = None
         self._plot = self._board_map = self._transient_plot = self._noise_plot = None
+        self._si_plot = None
         self._dc_for_ac = None                 # the AC panel's DC result, until it is built
         self._viewer_stand_in = _LoadingView("Loading the 3D view…", self.views)
         self.views.addTab(self._viewer_stand_in, "3D view")
@@ -300,6 +345,8 @@ class MainWindow(QMainWindow):
         self.spin_z.valueChanged.connect(viewer.set_zscale)
         viewer.set_zscale(self.spin_z.value())
         self.chk_hide_non_included.toggled.connect(viewer.set_hide_non_included)
+        self.chk_dim.toggled.connect(viewer.set_dim_others)
+        viewer.set_dim_others(self.chk_dim.isChecked())
         if self.chk_hide_non_included.isChecked():
             viewer.set_hide_non_included(True)
         if self.cmb_color.currentIndex() == 1:
@@ -323,6 +370,8 @@ class MainWindow(QMainWindow):
         from kipi.ac.gui.transient_plot import TransientPlot
         from kipi.noise.gui.panel import NoisePanel
         from kipi.noise.gui.plot import NoisePlot
+        from kipi.si.gui.panel import SIPanel
+        from kipi.si.gui.plot import SIPlot
         self._plot = ImpedancePlot(self.views)
         self._board_map = BoardMap(self.views)
         self._transient_plot = TransientPlot(self.views)
@@ -331,6 +380,8 @@ class MainWindow(QMainWindow):
         self.views.addTab(self._board_map, "Board map")
         self.views.addTab(self._transient_plot, "Transient")
         self.views.addTab(self._noise_plot, "Waveforms")
+        self._si_plot = SIPlot(self.views)
+        self.views.addTab(self._si_plot, "SI plots")
         self._plot.cursor_moved.connect(self._show_cursor)
         self._set_plot_tabs(self.mode)
 
@@ -351,7 +402,19 @@ class MainWindow(QMainWindow):
             lambda path: self.log(f"Saved Coupled Noise results to {path}"))
         noise.part_selected.connect(
             lambda *a: self._pi_part_selected(*a) if self.mode == "noise" else None)
-        for panel in (ac, noise):
+        si = self._si_panel = SIPanel(self)
+        si.solve_requested.connect(self.run_si_solve)
+        si.scan_requested.connect(self.run_si_scan)
+        si.em_requested.connect(self.run_si_em)
+        si.report_requested.connect(self._si_report)
+        si.touchstone_requested.connect(self._si_touchstone)
+        si.spice_requested.connect(self._si_spice)
+        si.result_selected.connect(self._show_si_result)
+        si.overlay_changed.connect(lambda: self._show_coupling(front=False))
+        si.focus_changed.connect(self._update_focus)
+        si.results_saved.connect(
+            lambda path: self.log(f"Saved Signal Integrity results to {path}"))
+        for panel in (ac, noise, si):
             self._wire_panel(panel)
             self.setup_stack.addWidget(panel)
             if self.snapshot is not None and self.solve_panel.setup is not None:
@@ -379,6 +442,16 @@ class MainWindow(QMainWindow):
         return self._noise_panel
 
     @property
+    def si_panel(self):
+        self._build_modes()
+        return self._si_panel
+
+    @property
+    def si_plot(self):
+        self._build_modes()
+        return self._si_plot
+
+    @property
     def plot(self):
         self._build_modes()
         return self._plot
@@ -401,7 +474,7 @@ class MainWindow(QMainWindow):
     def _plots(self) -> list:
         """The AC and Coupled Noise plots, once built."""
         return [w for w in (self._plot, self._board_map, self._transient_plot,
-                            self._noise_plot) if w is not None]
+                            self._noise_plot, self._si_plot) if w is not None]
 
     def set_source(self, source: BoardSource, tool: Optional[InstalledTool] = None):
         """Read the board from ``source`` (KiCad, once KiPI has connected to it), ``tool``
@@ -418,6 +491,10 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Main", self)
         tb.setMovable(False)
         self.addToolBar(tb)
+        # The analysis mode first, where it is seen: Power Integrity (DC, AC, Coupled
+        # Noise) and Signal Integrity, each a group of buttons.
+        tb.addWidget(self._build_mode_switch(tb))
+        tb.addSeparator()
 
         def act(text, slot, tip="", keys="", view=False):
             a = QAction(text, self)
@@ -490,24 +567,42 @@ class MainWindow(QMainWindow):
         self.act_dark.setCheckable(True)
         self.act_dark.setChecked(theme.saved() == theme.DARK)
 
-        # Analysis mode, at the far right.
-        spacer = QWidget(tb)
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        tb.addWidget(spacer)
-        tb.addWidget(QLabel("Mode: ", tb))
+    def _build_mode_switch(self, parent) -> QWidget:
+        """The mode buttons, grouped under Power Integrity and Signal Integrity and drawn
+        as segmented buttons (radio buttons underneath: one mode at a time)."""
+        box = QWidget(parent)
+        box.setObjectName("mode_switch")
+        row = QHBoxLayout(box)
+        row.setContentsMargins(4, 2, 8, 2)
+        row.setSpacing(0)
         self.mode_buttons = QButtonGroup(self)
         tips = {"dc": "DC power integrity: IR drop, current density, electro-thermal",
                 "ac": "AC power integrity: PDN impedance over frequency at probe points",
                 "noise": "Coupled Noise: a buck or boost switcher's waveforms and the noise "
-                         "it couples onto signal nets"}
-        for key, label, _ in MODES:
-            rb = QRadioButton(label, tb)
-            rb.setObjectName(f"mode_{key}")
-            rb.setToolTip(with_keys(tips[key], KEYS[key]))
-            rb.setChecked(key == self.mode)
-            rb.toggled.connect(lambda on, k=key: on and self.set_mode(k))
-            self.mode_buttons.addButton(rb)
-            tb.addWidget(rb)
+                         "it couples onto signal nets",
+                "si": "Signal Integrity: a Quick Scan of every signal net, and channels' "
+                      "S-parameters, TDR, eyes and waveforms"}
+        labels = {k: label for k, label, _ in MODES}
+        for g, (title, keys) in enumerate(MODE_GROUPS):
+            if g:
+                row.addSpacing(16)
+            cap = QLabel(title, box)
+            cap.setObjectName("mode_group")
+            row.addWidget(cap)
+            row.addSpacing(6)
+            for i, key in enumerate(keys):
+                rb = QRadioButton(labels[key], box)
+                rb.setObjectName(f"mode_{key}")
+                rb.setProperty("segment", "only" if len(keys) == 1 else
+                               "first" if i == 0 else "last" if i == len(keys) - 1 else "mid")
+                rb.setCursor(Qt.PointingHandCursor)
+                rb.setToolTip(with_keys(tips[key], KEYS[key]))
+                rb.setChecked(key == self.mode)
+                rb.toggled.connect(lambda on, k=key: on and self.set_mode(k))
+                self.mode_buttons.addButton(rb)
+                row.addWidget(rb)
+        box.setStyleSheet(MODE_SWITCH_STYLE)
+        return box
 
     def _set_controls_enabled(self, on: bool):
         """The DC / AC switch, Import and Save are greyed out while a task runs (reading
@@ -551,26 +646,30 @@ class MainWindow(QMainWindow):
                                                   "before changing the analysis mode.")
             self._check_mode_button(self.mode)
             return
-        self.mode = mode
+        old_mode, self.mode = self.mode, mode
         self._check_mode_button(mode)
+        self._switch_net_family(old_mode)
         # VRMs, series links and capacitor models are shared: show the other panels' edits.
         if mode == "dc":
             self.solve_panel.reload_shared()
         else:
             self._mode_panel().reload()
         self.setup_stack.setCurrentWidget(self._mode_panel())
+        self.setup_bar.set_mode(mode)
+        self._fit_setup_dock()
         self.solve_dock.setWindowTitle(next(t for k, _, t in MODES if k == mode))
         self._set_open_results_tip()
         self._set_plot_tabs(mode)
         self._sync_pi_markers()
         self._show_coupling(front=False)      # Coupled Noise's overlay, that mode only
+        self._update_focus()
         self._mode_panel()._part_selection(False)     # the part selected in this mode's lists
         if mode == "dc":
             if self._tree:
                 self._show_group(self.solve_panel.cmb_group.currentText())
         else:
             self.viewer.clear_result()        # DC results do not apply; show the copper
-            plot = self.plot if mode == "ac" else self.noise_plot
+            plot = {"ac": self.plot, "noise": self.noise_plot, "si": self.si_plot}[mode]
             if plot.result is not None:
                 self.views.setCurrentWidget(plot)
         self.log(f"Analysis mode: {mode.upper()}")
@@ -582,7 +681,9 @@ class MainWindow(QMainWindow):
              "ac": "Reopen saved AC impedance results (.kipi-ac-results); load the board "
                    "first",
              "noise": "Reopen saved Coupled Noise results (.kipi-noise-results); load the "
-                      "board first"}[self.mode],
+                      "board first",
+             "si": "Reopen saved Signal Integrity results (.kipi-si-results); load the "
+                   "board first"}[self.mode],
             KEYS["results"]))
 
     def _set_plot_tabs(self, mode: str):
@@ -592,7 +693,8 @@ class MainWindow(QMainWindow):
         if self._plot is None:
             return                              # not built yet: no tabs to show or hide
         tabs = {self._plot: mode == "ac", self._board_map: mode == "ac",
-                self._transient_plot: mode == "ac", self._noise_plot: mode == "noise"}
+                self._transient_plot: mode == "ac", self._noise_plot: mode == "noise",
+                self._si_plot: mode == "si"}
         for w, shown in tabs.items():
             i = self.views.indexOf(w)
             if hasattr(self.views, "setTabVisible"):
@@ -658,11 +760,17 @@ class MainWindow(QMainWindow):
         self.chk_power_only.setChecked(True)
         self.chk_power_only.setToolTip("Hide signal nets that are not ticked. Power and ground "
                                        "nets are recognized by name, net class and zones.")
-        self.chk_power_only.toggled.connect(self._apply_net_filter)
+        self.chk_power_only.toggled.connect(self._net_filter_toggled)
         self.net_list = QListWidget(g_nets)
         self.net_list.itemChanged.connect(self._on_net_item_changed)
         self.net_list.setToolTip("Tick the nets to analyze: they are drawn in 3D and offered "
-                                 "in the setup's pin pickers")
+                                 "in the setup's pin pickers. Select nets (Ctrl or Shift for "
+                                 "more) to pick them out in 3D, the rest dimmed; Esc clears")
+        self.net_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.net_list.itemSelectionChanged.connect(self._update_focus)
+        esc = QShortcut(QKeySequence(Qt.Key_Escape), self.net_list)
+        esc.setContext(Qt.WidgetShortcut)
+        esc.activated.connect(self.net_list.clearSelection)
         # Rows enough for the scroll bar's handle to move: squeezed to two rows it filled
         # the bar and could not be dragged. A short dock scrolls the whole panel instead.
         _rows(self.net_list, 8)
@@ -670,6 +778,7 @@ class MainWindow(QMainWindow):
         btn_power = QPushButton("All power", g_nets)
         btn_power.setToolTip("Tick every power and ground net (keeps the nets already ticked)")
         btn_power.clicked.connect(self._check_power_nets)
+        self.btn_power = btn_power
         btn_none = QPushButton("None", g_nets)
         btn_none.setToolTip("Untick every net")
         btn_none.clicked.connect(lambda: self._set_checked(lambda it: False))
@@ -712,7 +821,7 @@ class MainWindow(QMainWindow):
         self.spin_z = QDoubleSpinBox(g_view)
         self.spin_z.setRange(1.0, 100.0)
         self.spin_z.setSingleStep(1.0)
-        self.spin_z.setValue(5.0)
+        self.spin_z.setValue(1.0)
         self.spin_z.setSuffix(" ×")
         self.spin_z.setToolTip("Stretch the stackup vertically to see the layers apart. "
                                "Only the drawing changes, not the solve.")
@@ -761,7 +870,7 @@ class MainWindow(QMainWindow):
                                  (1, ("silk", "Silkscreen")), (2, ("pi", "PI Models")),
                                  (2, ("models", "3D Models"))):
             cb = QCheckBox(label, g_view)
-            cb.setChecked(name not in ("pi", "mask", "silk"))
+            cb.setChecked(name not in ("pi", "mask", "silk", "models"))
             cb.setToolTip(art_tip(feat_tips[name], "coatings", name) if name in ("mask", "silk")
                           else feat_tips[name])
             cb.toggled.connect(lambda v, n=name: self.viewer.set_feature_visible(n, v))
@@ -776,6 +885,12 @@ class MainWindow(QMainWindow):
         self.chk_hide_non_included.setToolTip(
             "Show all copper by default. When ticked, show only nets included in the analysis.")
         feats.addWidget(self.chk_hide_non_included)
+        self.chk_dim = QCheckBox("Dim other nets", g_view)
+        self.chk_dim.setChecked(True)
+        self.chk_dim.setToolTip(
+            "Nets selected in the Nets list (or, in SI mode, the Quick Scan net or channel "
+            "selected) are drawn at full color and the rest faded, to see them clearly")
+        feats.addWidget(self.chk_dim)
         # Only on request: a guessed model may be the wrong part (#130).
         self.btn_guess = QPushButton("Guess models", g_view)
         self.btn_guess.setToolTip(
@@ -873,7 +988,7 @@ class MainWindow(QMainWindow):
         self.setup_bar.autofill_requested.connect(self.autofill_rail)
         self.setup_bar.save_requested.connect(self._save_setup)
         self.setup_bar.setEnabled(False)                       # until a board is read
-        self.setup_stack = QStackedWidget(self)
+        self.setup_stack = _PageStack(self)
         for panel in self._panels().values():
             self.setup_stack.addWidget(panel)
         holder = QWidget(self)
@@ -930,11 +1045,26 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.heartbeat)
 
     # ============================================================ logging
+    def _fit_setup_dock(self):
+        """Widen the setup dock to its panel's minimum (and the scroll bar's), so nothing
+        on the panel's right is cut off; never narrower than it is."""
+        dock = self.solve_dock
+        if dock.isFloating():
+            return
+        page = self.setup_stack.currentWidget()
+        if page is None:
+            return
+        need = (page.minimumSizeHint().width()
+                + self.style().pixelMetric(QStyle.PM_ScrollBarExtent) + 12)
+        if dock.width() < need:
+            self.resizeDocks([dock], [need], Qt.Horizontal)
+
     def showEvent(self, event):
         super().showEvent(event)
         if not self._fitted:
             self._fitted = True
             fit_to_screen(self)
+            self._fit_setup_dock()
         if self._viewer is None and self.windowHandle() is not None:
             self.windowHandle().installEventFilter(self)
 
@@ -1033,6 +1163,7 @@ class MainWindow(QMainWindow):
         pending, self._pending_solve = getattr(self, "_pending_solve", None), None
         pending_ac, self._pending_ac = getattr(self, "_pending_ac", None), None
         pending_noise, self._pending_noise = getattr(self, "_pending_noise", None), None
+        pending_si, self._pending_si = getattr(self, "_pending_si", None), None
         self.btn_cancel.setEnabled(False)
         self.act_cancel.setEnabled(False)
         self.act_reload.setEnabled(True)
@@ -1053,6 +1184,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self.run_ac_solve(*pending_ac))
         elif pending_noise is not None:
             QTimer.singleShot(0, lambda: self.run_noise_solve(*pending_noise))
+        elif pending_si is not None:
+            QTimer.singleShot(0, lambda: self.run_si_solve(*pending_si))
 
     def _on_task_failed(self, name: str, tb: str):
         log.error(tb)
@@ -1236,10 +1369,10 @@ class MainWindow(QMainWindow):
         self._imported_stackup = snap.stackup
         self._apply_setup_stackup(setup)
         self._populate_layers()
-        self._populate_nets(keep if keep is not None else setup.nets, setup)
+        self._populate_nets(keep if keep is not None else self._setup_ticks(setup), setup)
         # The setup as loaded, with the nets ticked by default on a new board: what Save
         # would write now, so only later edits count as not saved.
-        setup.nets = self._checked_nets()
+        self._store_ticks(setup)
         self._saved = copy.deepcopy(setup)
         self._show_unsaved()
         self.setup_bar.setEnabled(not self._busy())
@@ -1281,11 +1414,39 @@ class MainWindow(QMainWindow):
             self.layer_list.addItem(it)
         self.layer_list.blockSignals(False)
 
+    # The Nets list serves two families of modes: the power analyses (DC, AC, Coupled
+    # Noise) and Signal Integrity. Each has its own ticked nets (setup.nets, setup.si_nets),
+    # order and filter: switching between them swaps the list.
+    def _net_family(self, mode: Optional[str] = None) -> str:
+        return "si" if (mode or self.mode) == "si" else "pi"
+
+    def _ticks_attr(self, family: Optional[str] = None) -> str:
+        return "si_nets" if (family or self._net_family()) == "si" else "nets"
+
+    def _store_ticks(self, setup, family: Optional[str] = None):
+        """The ticked nets into the setup, as the list's family's."""
+        setattr(setup, self._ticks_attr(family), self._checked_nets())
+
+    def _setup_ticks(self, setup):
+        return getattr(setup, self._ticks_attr())
+
+    def _si_default_nets(self, setup, kinds) -> set:
+        """SI's nets before any are chosen: the channels' nets (their pairs' legs and
+        aggressors), or else every differential pair; and the main ground, for the planes."""
+        from kipi.si.pairs import pair_map
+        auto = {n for c in getattr(setup, "si_channels", [])
+                for n in (c.net, c.partner, *c.aggressors) if n}
+        if not auto:
+            auto = set(pair_map([n for n, k in kinds.items() if k == "signal"]))
+        return auto
+
     def _populate_nets(self, chosen: Optional[List[str]], setup):
         """Fill the net list, ticking ``chosen``; None means the user has never chosen
-        (a new setup), so tick the main power and ground planes instead."""
+        (a new setup), so tick the main power and ground planes instead (in SI mode: the
+        channels' nets or the pairs, and the main ground)."""
         snap = self.snapshot
         kinds = classify_nets(snap)
+        family = self._net_family()
         pad_count: Dict[str, int] = {}
         for p in snap.pads:
             pad_count[p.net] = pad_count.get(p.net, 0) + 1
@@ -1295,6 +1456,11 @@ class MainWindow(QMainWindow):
             if gone:
                 self.log(f"Nets in the setup that are not on the board: {', '.join(gone)}",
                          logging.WARNING)
+        elif family == "si":
+            zone_nets = {z.net for z in snap.zones}
+            by_pads = sorted(zone_nets, key=lambda n: -pad_count.get(n, 0))
+            auto = (self._si_default_nets(setup, kinds)
+                    | set([n for n in by_pads if kinds.get(n) == "ground"][:1]))
         else:
             # Start with the main plane nets: a few power nets plus the main ground.
             zone_nets = {z.net for z in snap.zones}
@@ -1307,14 +1473,13 @@ class MainWindow(QMainWindow):
 
         self.net_list.blockSignals(True)
         self.net_list.clear()
-        for name in sorted_nets(snap):
-            kind = kinds[name]
-            tag = _KIND_TAG[kind]
+        for name, kind, tag in self._net_rows(snap, kinds, family):
             extra = f"  [{tag}]" if tag else ""
             it = QListWidgetItem(f"{name}{extra}   ({pad_count.get(name, 0)} pads)")
             it.setData(Qt.UserRole, name)
             it.setData(Qt.UserRole + 1, kind)
-            it.setForeground(QColor(_KIND_COLOR[kind]))
+            it.setData(Qt.UserRole + 2, tag)
+            it.setForeground(QColor(_KIND_COLOR[kind] if tag != "slow" else "#707070"))
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(Qt.Checked if name in auto else Qt.Unchecked)
             self.net_list.addItem(it)
@@ -1322,16 +1487,66 @@ class MainWindow(QMainWindow):
         self._checked_cache = None
         self._apply_net_filter()
 
+    @staticmethod
+    def _net_rows(snap, kinds, family: str):
+        """(name, kind, tag) in the list's order. Power analyses: power, ground, signals.
+        SI: differential pairs (legs together), the other signals, the slow control nets,
+        then ground and power (the reference planes)."""
+        if family != "si":
+            return [(n, kinds[n], _KIND_TAG[kinds[n]]) for n in sorted_nets(snap)]
+        from kipi.si.pairs import pair_map
+        from kipi.si.scan import is_slow
+        signals = [n for n, k in kinds.items() if k == "signal"]
+        pairs = pair_map(signals)
+
+        def key(n):
+            k = kinds[n]
+            if k != "signal":
+                return (3 if k == "ground" else 4, n.lower())
+            if n in pairs:                  # a pair's legs side by side
+                return (0, min(n, pairs[n]).lower(), n.lower())
+            return (2 if is_slow(n) else 1, n.lower())
+
+        rows = []
+        for n in sorted(kinds, key=key):
+            k = kinds[n]
+            tag = (_KIND_TAG[k] if k != "signal" else "PAIR" if n in pairs
+                   else "slow" if is_slow(n) else "")
+            rows.append((n, k, tag))
+        return rows
+
     def _apply_net_filter(self):
         text = self.net_filter.text().strip().lower()
-        power_only = self.chk_power_only.isChecked()
+        only = self.chk_power_only.isChecked()
+        si = self._net_family() == "si"
         for i in range(self.net_list.count()):
             it = self.net_list.item(i)
             name = it.data(Qt.UserRole).lower()
             kind = it.data(Qt.UserRole + 1)
-            hide = (text and text not in name) or (power_only and kind == "signal"
+            # The family's own nets, and any ticked: PI hides signals, SI power and ground.
+            other = (kind != "signal") if si else (kind == "signal")
+            hide = (text and text not in name) or (only and other
                                                   and it.checkState() != Qt.Checked)
             it.setHidden(bool(hide))
+
+    def _set_net_family_widgets(self):
+        """The Nets box's filter and quick-tick button for the mode's family."""
+        si = self._net_family() == "si"
+        self.chk_power_only.blockSignals(True)
+        self.chk_power_only.setText("Signal nets only" if si else "Power && ground only")
+        self.chk_power_only.setToolTip(
+            "Hide power and ground nets that are not ticked (the planes are used as the "
+            "signals' reference whether ticked or not). Pairs are found by name; slow "
+            "control nets (enables, resets, LEDs, I²C, JTAG) are listed last, in grey."
+            if si else
+            "Hide signal nets that are not ticked. Power and ground nets are recognized "
+            "by name, net class and zones.")
+        self.chk_power_only.setChecked(self._net_filter_on[self._net_family()])
+        self.chk_power_only.blockSignals(False)
+        self.btn_power.setText("All pairs" if si else "All power")
+        self.btn_power.setToolTip(
+            "Tick every differential pair's legs (keeps the nets already ticked)" if si
+            else "Tick every power and ground net (keeps the nets already ticked)")
 
     def _checked_nets(self) -> List[str]:
         return [self.net_list.item(i).data(Qt.UserRole) for i in range(self.net_list.count())
@@ -1355,14 +1570,47 @@ class MainWindow(QMainWindow):
         self._sync_timer.start()
 
     def _check_power_nets(self):
+        if self._net_family() == "si":
+            self._set_checked(lambda it: it.checkState() == Qt.Checked
+                              or it.data(Qt.UserRole + 2) == "PAIR")
+            return
         self._set_checked(lambda it: it.checkState() == Qt.Checked
                           or it.data(Qt.UserRole + 1) != "signal")
+
+    def _net_filter_toggled(self, on: bool):
+        self._net_filter_on[self._net_family()] = bool(on)
+        self._apply_net_filter()
+
+    def _switch_net_family(self, old_mode: str):
+        """Entering or leaving SI mode: keep the ticks of the family left, and fill the
+        list with the other's."""
+        if self._net_family(old_mode) == self._net_family():
+            return
+        if self.snapshot is None or self.solve_panel.setup is None:
+            self._set_net_family_widgets()
+            return
+        setup = self.solve_panel.setup
+        self._store_ticks(setup, self._net_family(old_mode))
+        self._set_net_family_widgets()
+        self._populate_nets(self._setup_ticks(setup), setup)
+        self._store_ticks(setup)
+        self.sync_nets()
 
     def _on_net_item_changed(self, item):
         self._checked_cache = None
         self.viewer.set_included_nets(self._checked_set())
         self._sync_timer.start()
         self._show_unsaved()
+
+    def _update_focus(self):
+        """The nets picked out in 3D: those selected in the Nets list, else in SI mode the
+        selected Quick Scan net or channel (with its aggressors)."""
+        if self._closed:
+            return
+        nets = [it.data(Qt.UserRole) for it in self.net_list.selectedItems()]
+        if not nets and self.mode == "si" and self._si_panel is not None:
+            nets = self._si_panel.focus_nets()
+        self.viewer.set_focus_nets(nets)
 
     def _on_layer_item_changed(self, item):
         self.viewer.set_layer_visible(item.data(Qt.UserRole), item.checkState() == Qt.Checked)
@@ -1392,7 +1640,7 @@ class MainWindow(QMainWindow):
         self.viewer.set_included_nets(included)
         for panel in self._panels().values():
             panel.set_nets(list(included))
-        self.solve_panel.setup.nets = self._checked_nets()   # saved with the setup
+        self._store_ticks(self.solve_panel.setup)             # saved with the setup
         self._model_timer.start()
         if self._busy():
             self._resync_pending = True
@@ -1462,11 +1710,13 @@ class MainWindow(QMainWindow):
         elif self.mode == "noise":
             from kipi.noise.markers import noise_markers
             markers = noise_markers(self.snapshot, setup, nets)
+        elif self.mode == "si":
+            markers = []
         else:
             from kipi.ac.viz.markers import ac_markers
             markers = ac_markers(self.snapshot, setup, nets)
         self.viewer.set_pi_markers(markers)
-        if self.mode == "noise":
+        if self.mode in ("noise", "si"):
             self._show_coupling(front=False)  # a new board's view starts without it
 
     def _show_coupling(self, front: bool = True):
@@ -1476,6 +1726,8 @@ class MainWindow(QMainWindow):
             return
         noise = self.mode == "noise"
         ov = self.noise_panel.coupling_overlay() if noise else None
+        if self.mode == "si" and self._si_panel is not None:
+            ov = self._si_panel.overlay()     # the impedance along the traces
         loops = self.noise_panel.hot_loops_overlay() if noise else None
         fields = self.noise_panel.fields_overlay() if noise else None
         if ov is None and loops is None and fields is None and self.viewer.coupling is None \
@@ -1491,13 +1743,13 @@ class MainWindow(QMainWindow):
         """Each mode's setup panel built so far, by mode key."""
         panels = {"dc": self.solve_panel}
         if self._ac_panel is not None:
-            panels.update(ac=self._ac_panel, noise=self._noise_panel)
+            panels.update(ac=self._ac_panel, noise=self._noise_panel, si=self._si_panel)
         return panels
 
     def _mode_panel(self):
         """The setup panel of the current mode (built now if need be)."""
         return {"dc": lambda: self.solve_panel, "ac": lambda: self.ac_panel,
-                "noise": lambda: self.noise_panel}[self.mode]()
+                "noise": lambda: self.noise_panel, "si": lambda: self.si_panel}[self.mode]()
 
     def _set_panels_board(self, snap: BoardSnapshot, setup):
         """Give every mode's setup panel the board and its setup. The AC panel adds the
@@ -1796,7 +2048,7 @@ class MainWindow(QMainWindow):
         if self._setup_path is None:
             return
         if self.snapshot is not None:   # a checkbox change may not have synced yet
-            self.solve_panel.setup.nets = self._checked_nets()
+            self._store_ticks(self.solve_panel.setup)
         try:
             self._setup_path = self.solve_panel.setup.save(self._setup_path)
             self._saved = copy.deepcopy(self.solve_panel.setup)
@@ -2104,6 +2356,228 @@ class MainWindow(QMainWindow):
             return
         self.log(f"Opened Coupled Noise results saved {data['saved']} from {path}")
 
+    # ------------------------------------------------------------ Signal Integrity
+    def _si_board(self, snap, setup):
+        """The board's copper indexed for SI cuts, kept while the board and its stackup
+        stay the same (built in the worker that first needs it)."""
+        from kipi.si.board import SIBoard
+        key = (id(snap), id(snap.stackup), setup.si.etch_mm, setup.ac.loss_tangent)
+        cached = getattr(self, "_si_board_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        board = SIBoard(snap, setup.ac.loss_tangent, setup.si.etch_mm)
+        self._si_board_cache = (key, board)
+        return board
+
+    def run_si_solve(self, setup, names):
+        """Solve Signal Integrity channels: ``names`` (one name, or a list solved in turn
+        on one indexed board, each result shown as it comes)."""
+        snap = self.snapshot
+        if snap is None:
+            return
+        names = [names] if isinstance(names, str) else list(names)
+        if not names:
+            return
+        if self._busy():
+            self._pending_si = (setup, names)
+            self.si_panel.set_busy(True, queued=True)
+            self.log("Signal Integrity solve queued until the current task finishes")
+            return
+        frozen = copy.deepcopy(setup)
+        many = len(names) > 1
+
+        def work(progress):
+            from kipi.si.solver import SIError, solve_channel
+            with progress.timed("Indexing the board's copper"):
+                board = self._si_board(snap, frozen)
+            out = []
+            for i, name in enumerate(names):
+                progress.check_cancel()
+                if many:
+                    progress.info(f"== Channel {i + 1} of {len(names)}: {name}")
+                try:
+                    result = solve_channel(snap, frozen, name, progress, board)
+                except (SIError, ValueError) as e:
+                    progress.warn(f"{name}: {e}" if many else str(e))
+                    item = (name, None, str(e))
+                else:
+                    result.solved_setup = frozen
+                    item = (name, result, None)
+                out.append(item)
+                progress.partial(item)
+            return out
+
+        shown = set()
+
+        def partial(item):
+            name, result, error = item
+            shown.add(name)
+            if result is None:
+                self.si_panel.show_error(error, name)
+                return
+            self.si_panel.show_result(result)
+            if many:
+                self.log(f"{name}: {result.status}",
+                         logging.INFO if result.status == "PASS" else logging.WARNING)
+            for c in result.checks:
+                self.log(f"  {c.status} {c.check}: {c.text}",
+                         logging.INFO if c.status == "PASS" else logging.WARNING)
+
+        def done(out):
+            for item in out:                    # any a partial did not bring
+                if item[0] not in shown:
+                    partial(item)
+            if not many:
+                return
+            counts = {}
+            for _n, r, _e in out:
+                key = r.status if r is not None else "error"
+                counts[key] = counts.get(key, 0) + 1
+            parts = [f"{counts[k]} {k}" for k in ("PASS", "WARN", "FAIL", "error") if k in counts]
+            self.log(f"Signal Integrity: {len(out)} of {len(names)} channel(s) solved: "
+                     + ", ".join(parts))
+
+        if self._run(work, done, "Signal Integrity solve", on_partial=partial) is not None:
+            self.si_panel.set_busy(True)
+
+    def run_si_scan(self, setup, nets):
+        snap = self.snapshot
+        if snap is None or self._busy():
+            return
+        frozen = copy.deepcopy(setup)
+
+        def work(progress):
+            from kipi.si.scan import scan, settings_of, signal_nets
+            board = self._si_board(snap, frozen)
+            chosen = None
+            if nets is not None:
+                ok = set(signal_nets(snap))
+                chosen = [n for n in nets if n in ok]
+            return scan(snap, chosen, settings_of(frozen.si), progress, board)
+
+        def done(result):
+            self.si_panel.show_scan(result)
+            fails = sum(n.status == "FAIL" for n in result.nets)
+            self.log(f"Quick Scan: {len(result.nets)} net(s), {fails} failing, "
+                     f"{result.seconds:.1f} s")
+            if self.mode == "si":
+                self.views.setCurrentWidget(self.viewer)
+
+        if self._run(work, done, "Signal Integrity Quick Scan") is not None:
+            self.si_panel.set_busy(True)
+
+    def run_si_em(self, setup, name: str, via_id: str):
+        """A 3D openEMS check of the region around a via of a solved channel, beside
+        KiPI's own model of the same region."""
+        snap = self.snapshot
+        if snap is None or self._busy():
+            return
+        frozen = copy.deepcopy(setup)
+        work_dir = Path(tempfile.mkdtemp(prefix="kipi-openems-"))
+
+        def work(progress):
+            from kipi.si.verify import verify_via
+            board = self._si_board(snap, frozen)
+            try:
+                return verify_via(snap, frozen, name, via_id, work_dir, progress, board), None
+            except Exception as e:  # noqa: BLE001 - shown in the panel
+                progress.warn(f"{type(e).__name__}: {e}")
+                return None, f"{type(e).__name__}: {e}"
+
+        def done(out):
+            cmp, error = out
+            if cmp is None:
+                self.si_panel.show_em(None, f'<span style="color:#ff7070">{html.escape(error)}'
+                                            '</span>')
+                return
+            self.si_panel.show_em(cmp, cmp.summary_html())
+            self.si_plot.set_em(cmp)
+            self.views.setCurrentWidget(self.si_plot)
+            self.log(cmp.summary_text())
+
+        if self._run(work, done, "openEMS 3D check") is not None:
+            self.si_panel.set_busy(True)
+
+    def _show_si_result(self, result):
+        if result is None:
+            self.si_plot.clear()
+            return
+        self.si_plot.set_result(result)
+        if self.mode == "si":
+            self.views.setCurrentWidget(self.si_plot)
+
+    def _si_report(self, result, fmt: str):
+        snap = self.snapshot
+        if result is None or snap is None:
+            return
+        from kipi.si.html_report import report_name, write_si_report
+        setup = self._report_setup(result, self.si_panel)
+        scan = self.si_panel.scan_result
+        self._write_report("Signal Integrity",
+                           lambda p, progress: write_si_report(p, result, snap, setup, scan,
+                                                               progress),
+                           self._report_path(report_name(self._results_stem(),
+                                                         result.channel.name, fmt=fmt)),
+                           lambda path: self.si_panel.set_report(result, str(path)))
+
+    def _si_touchstone(self, result):
+        if result is None:
+            return
+        from kipi.si.report import export_touchstone, touchstone_name
+        start = self._report_path(touchstone_name(self._results_stem(), result.channel.name,
+                                                  len(result.port_names)))
+        path, _ = QFileDialog.getSaveFileName(self, "Export Touchstone", str(start),
+                                              "Touchstone (*.s*p)")
+        if not path:
+            return
+        try:
+            out = export_touchstone(path, result)
+        except OSError as e:
+            QMessageBox.warning(self, "KiPI", f"Could not write {path}:\n{e}")
+            return
+        self.log(f"Wrote {out}")
+
+    def _si_spice(self, result):
+        if result is None:
+            return
+        from kipi.si.report import export_spice, spice_name
+        start = self._report_path(spice_name(self._results_stem(), result.channel.name))
+        path, _ = QFileDialog.getSaveFileName(self, "Export SPICE model", str(start),
+                                              "SPICE library (*.lib *.sp *.cir)")
+        if not path:
+            return
+
+        def work(progress):
+            with progress.timed("Fitting the channel's S-parameters"):
+                return export_spice(path, result)
+
+        def done(out):
+            written, notes = out
+            self.log(f"Wrote {written}: {'; '.join(notes)}")
+
+        self._run(work, done, "SPICE model export")
+
+    def _open_si_results(self):
+        from kipi.si import report
+        start = str(self._setup_path.parent) if self._setup_path else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Open Signal Integrity results", start,
+                                              report.OPEN_FILTER)
+        if not path:
+            return
+        try:
+            data = report.load_results(path)
+        except Exception as e:  # noqa: BLE001 - any unreadable file
+            QMessageBox.warning(self, "KiPI", f"Could not open {path}:\n{e}")
+            return
+        if data["board"] != self.snapshot.board_name:
+            self.log(f"Results are for {data['board']}, not {self.snapshot.board_name}",
+                     logging.WARNING)
+        left_out = self.si_panel.load_results(data["results"], data.get("scan"))
+        if left_out:
+            self.log(f"No channel in the setup named {', '.join(left_out)}; their results "
+                     f"were left out", logging.WARNING)
+        self.log(f"Opened Signal Integrity results saved {data['saved']} from {path}")
+
     def _show_cursor(self, text: str):
         """The impedance plot's cursor values, in the Info pane in place of the last pick."""
         if not text:
@@ -2255,6 +2729,9 @@ class MainWindow(QMainWindow):
             return
         if self.mode == "noise":
             self._open_noise_results()
+            return
+        if self.mode == "si":
+            self._open_si_results()
             return
         from kipi.dc.pi import report
         start = str(self._setup_path.parent) if self._setup_path else ""
@@ -2612,7 +3089,7 @@ class MainWindow(QMainWindow):
         if self.snapshot is None or self._saved is None:
             return False
         now = copy.copy(self.solve_panel.setup)       # compared, not changed: the net
-        now.nets = self._checked_nets()                # list may still be filling in
+        self._store_ticks(now)                         # list may still be filling in
         saved = self._saved
         # An AC rail or ground left empty follows the VRM's; the AC panel filling it in
         # once the nets are known is not an edit.

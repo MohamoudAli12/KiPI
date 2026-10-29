@@ -182,7 +182,8 @@ def extract_stackup(board, progress: ProgressReporter = NULL,
                 t = sum(mm(s.thickness) for s in subs) or mm(sl.thickness)
                 mat = subs[0].material_name if subs else sl.material_name
                 er = combined_epsilon_r([(mm(s.thickness), s.epsilon_r) for s in subs])
-                entries.append(("diel", -1, t, mat, er))
+                tand = sum(mm(s.thickness) * getattr(s, "loss_tangent", 0.0) for s in subs)
+                entries.append(("diel", -1, t, mat, er, tand / t if t > 0 else 0.0))
             elif sl.type in (board_pb2.BoardStackupLayerType.BSLT_SOLDERMASK,
                              board_pb2.BoardStackupLayerType.BSLT_SILKSCREEN):
                 coat = _coating(sl, board_pb2)
@@ -476,7 +477,9 @@ def extract_board(board, refill_zones: bool = False,
                 position=pt(fp.position),
                 side="bottom" if fp.layer == BoardLayer.BL_B_Cu else "top",
                 pad_ids=[p.id.value for p in fpads], footprint=_footprint_name(fp),
-                angle_deg=_fp_angle(fp), fields=_fp_fields(fp)))
+                angle_deg=_fp_angle(fp), fields=_fp_fields(fp),
+                # The API gives the footprint's DNP, but not its assembly variants'.
+                dnp=bool(getattr(getattr(fp, "attributes", None), "do_not_populate", False))))
             for p in fpads:
                 pad_ref[p.id.value] = ref
             kpads.extend(fpads)

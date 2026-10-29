@@ -30,12 +30,23 @@ def _mode(w, key) -> QRadioButton:
     return w.findChild(QRadioButton, f"mode_{key}")
 
 
-def test_mode_buttons_are_last_on_the_toolbar(window):
+def test_mode_switch_leads_the_toolbar_grouped_pi_and_si(window):
     tb = window.findChild(QToolBar)
-    widgets = [tb.widgetForAction(a) for a in tb.actions()]
-    tail = widgets[-4:]
-    assert isinstance(tail[0], QLabel) and tail[0].text().strip() == "Mode:"
-    assert [rb.text() for rb in tail[1:]] == ["DC", "AC", "Noise"]
+    first = tb.widgetForAction(tb.actions()[0])
+    assert first.objectName() == "mode_switch"
+    lay = first.layout()
+    order = [lay.itemAt(i).widget().text() for i in range(lay.count())
+             if isinstance(lay.itemAt(i).widget(), (QLabel, QRadioButton))]
+    assert order == ["Power Integrity", "DC", "AC", "Noise", "Signal Integrity", "SI"]
+
+
+def test_power_tree_buttons_are_pi_only(window):
+    bar = window.setup_bar
+    for mode, shown in (("si", False), ("noise", True), ("si", False), ("dc", True)):
+        _mode(window, mode).setChecked(True)
+        assert bar.btn_autofill.isHidden() is not shown
+        assert bar.btn_import.isHidden() is not shown
+        assert not bar.btn_save.isHidden()
 
 
 def test_dc_is_the_default(window):
@@ -102,3 +113,32 @@ def test_impedance_plot_is_a_tab_beside_the_3d_view_in_ac_only(window):
     _mode(window, "dc").setChecked(True)
     assert not _plot_tab_shown(window)
     assert window.views.currentWidget() is window.viewer
+
+
+def test_si_mode_shows_its_panel_and_plots(window):
+    _mode(window, "si").setChecked(True)
+    assert window.mode == "si"
+    assert window.setup_stack.currentWidget() is window.si_panel
+    assert window.solve_dock.windowTitle() == "Signal Integrity setup"
+    i = window.views.indexOf(window.si_plot)
+    if hasattr(window.views, "isTabVisible"):
+        assert window.views.isTabVisible(i)
+        assert not window.views.isTabVisible(window.views.indexOf(window.noise_plot))
+    _mode(window, "dc").setChecked(True)
+    if hasattr(window.views, "isTabVisible"):
+        assert not window.views.isTabVisible(i)
+
+
+def test_setup_dock_fits_the_mode_shown(window, app):
+    """The setup stack is as wide as the page it shows, not its widest one (DC's), so SI's
+    Scan button is not scrolled out of a narrow dock; the dock widens to a wide page."""
+    window._fitted = True                  # the offscreen screen is smaller than a window
+    window.resize(1500, 950)
+    window.show()
+    area = window.setup_stack.parentWidget().parentWidget()
+    for mode in ("si", "dc"):
+        window.set_mode(mode)
+        app.processEvents()
+        page = window.setup_stack.currentWidget()
+        assert window.setup_stack.minimumSizeHint().width() == page.minimumSizeHint().width()
+        assert area.horizontalScrollBar().maximum() == 0, mode

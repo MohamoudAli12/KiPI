@@ -14,8 +14,8 @@
 ([source](docs/solver-guide.html)): what PI analysis is, why it matters, and how KiPI's mesh
 and its DC, thermal, AC and coupled noise solvers work.
 
-KiPI is a power integrity analyzer that runs standalone or as a KiCad 9 and 10 IPC plugin. It has three
-analysis modes:
+KiPI is a power and signal integrity analyzer that runs standalone or as a KiCad 9 and 10 IPC
+plugin. It has four analysis modes:
 
 * **DC: Voltage Drop.** Define voltage regulators (VRMs), loads (current into pins) and series
   parts (beads, resistors, load switches), then simulate the voltage drop net by net, across
@@ -33,6 +33,13 @@ analysis modes:
   through capacitance, mutual inductance and shared ground. Each victim's receiver is
   checked against its logic family's noise margin, with the line held high and held low, and
   the 3D view shows where along its traces the noise couples in.
+* **SI: Signal Integrity.** A **Quick Scan** checks every signal net in minutes: impedance
+  along each trace and pair, crosstalk to its neighbours, gaps and changes in its return
+  path, via stubs and pair skew. A **channel** (a net or differential pair, through its
+  series parts) is extracted from field-solved cross-sections and via models into
+  S-parameters, TDR, statistical and PRBS eyes with the interface's equaliser, COM, and
+  waveforms with generic or IBIS buffers, each checked against the interface (USB, PCIe,
+  SATA, HDMI, LVDS, DDR4 and more). openEMS, if installed, checks a via's model in 3D.
 
 New to KiPI? The **[user guide](docs/help.html)** (also the **Help** button in KiPI, or
 **F1**) walks through every button, the workflows and what the results mean. Every
@@ -179,10 +186,11 @@ stage as it runs.
   fills KiPI sees match your current routing. KiPI analyzes filled copper only.
 * **Save snapshot… / Open snapshot…** store the extracted board as a file that KiPI can open
   later without KiCad. See example snapshots in the repo to experiment!
-* **Mode: DC / AC / Noise** (right end of the toolbar, or **Ctrl+1** / **Ctrl+2** / **Ctrl+3**)
-  picks the analysis mode. Readme sections 2 to 5 are DC, the default;
-  [section 6](#6-ac-pdn-impedance) covers AC and [section 7](#7-coupled-noise) Coupled Noise.
-  The VRMs, series links and capacitor models are shared by all three.
+* **Power Integrity: DC / AC / Noise** and **Signal Integrity: SI** (the start of the
+  toolbar, or **Ctrl+1** to **Ctrl+4**) pick the analysis mode. Readme sections 2 to 5 are DC, the default;
+  [section 6](#6-ac-pdn-impedance) covers AC, [section 7](#7-coupled-noise) Coupled Noise and
+  [section 8](#8-signal-integrity) Signal Integrity. The VRMs, series links and capacitor
+  models are shared by the power modes.
 * **Help** (or **F1**) opens the [user guide](docs/help.html) in your browser.
 
 ### 2. Pick Power Nets from Netlist
@@ -390,6 +398,45 @@ The mechanisms point to different fixes: capacitive noise comes from the switch 
 dV/dt, inductive noise from the hot loop's dI/dt and common noise from the switching
 current's return. **Report** and **Save results…** work as in the other modes.
 
+### 8. Signal Integrity
+
+Switch **Mode** to **SI** (**Ctrl+4**). The **Signal Integrity setup** has four tabs. To
+try it, open `examples/signal_integrity/signal_integrity.kipi.json.gz`: a clock net through
+a series resistor and a USB pair changing layers through vias, with a channel set up for
+each.
+
+* **Quick Scan**: **Scan** cuts every signal net (or only the nets ticked in **Board**) into
+  short sections and field-solves each cross-section with its neighbours. Each net gets
+  PASS, WARN or FAIL for its impedance (Z0, or Zdiff for pairs found by name: `_P`/`_N`,
+  `+`/`-`, `DP`/`DM`), its worst crosstalk coefficient, any length with no reference plane
+  or crossing a plane's gap, layer changes without a return via nearby, via stubs that
+  resonate in band, and pair skew. **Impedance in 3D** colors the traces by how far they
+  are from target. **Make a channel** turns the selected net into a channel. Slow control
+  nets (enables, resets, LEDs, I²C, JTAG) are left out unless **Slow nets** is ticked. Cuts
+  that come out alike are solved once, in parallel on the CPU's cores: a 6-layer board with
+  about 400 signal nets takes a few minutes, and a rescan seconds.
+* **Channels**: a channel is a net or a pair, followed through series resistors and
+  AC-coupling capacitors to its receiver. **Add bus…** makes one for each net between a
+  transmitter and a receiver part (a DDR byte lane, an ADC's lanes), with the neighbours as
+  aggressors. Pick its **Interface** (rate, swing, edges,
+  terminations, equaliser and limits come from it, and any can be overridden) and its
+  **buffers**: generic ones, or a model from a manufacturer's **IBIS** file at a corner.
+  **Aggressors** add their near- and far-end crosstalk.
+* **Results**: after **Solve**, the checks (impedance, insertion and return loss at
+  Nyquist, mode conversion, skew, the eye against the receiver mask, COM, overshoot,
+  ringback, monotonic edges, crosstalk) and the **SI plots** tab: the eye (statistical at
+  the target BER with the best equaliser, or the raw or PRBS eye), TDR, S-parameters,
+  waveforms at the dies and the pulse response. **Export Touchstone…** writes the channel's
+  `.s2p`/`.s4p`, and **Export SPICE…** a passive rational model of it as a SPICE subcircuit
+for any circuit simulator; **Report** and **Save results…** work as in the other modes.
+* **Settings**: section length, etch, copper roughness (Hammerstad, Groisse or Huray), the
+  sweep, the scan's limits and the 3D check's mesh.
+
+**3D check (openEMS)**: with [openEMS](https://www.openems.de) installed (on the PATH, in
+`~/opt/openEMS`, or named by `KIPI_OPENEMS`), pick a via of the solved channel and **Run**:
+KiPI simulates the copper around it in 3D and plots openEMS's S-parameters beside its own
+model's, from the same ports. It takes minutes; the rest of the SI mode takes seconds.
+
 ### Tips and troubleshooting
 
 * **A load shows DISCONNECTED** usually means unrouted copper, an unfilled zone, or a
@@ -462,6 +509,7 @@ CI runs ruff and the test suite for every push and pull request on Windows, Linu
 | `kipi/dc/` | DC analysis: conduction FEM, power-tree setup and solve, thermal, reports, results views and panel |
 | `kipi/ac/` | AC analysis: PDN impedance over frequency, field solver and sweep, targets, transient, report and panel |
 | `kipi/noise/` | Coupled Noise analysis: waveforms, hot loop parasitics, coupling extraction, victim solves, report and panel |
+| `kipi/si/` | Signal Integrity: 2D cross-section field solver, via models, channel circuit, S-parameters, IBIS, transient, eyes and equalisers, Quick Scan, openEMS 3D check, report and panel |
 | `kipi/gui/` | PySide6 application shell shared by every mode: main window, mode switch, 3D viewer, worker threads, About and Help |
 | `docs/help.html` | The user guide opened by **Help**; a single offline HTML file |
 | `docs/solver-guide.html` | The Solver Guide: PI background and how the solvers work |

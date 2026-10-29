@@ -191,6 +191,17 @@ ol.steps > li { margin-bottom: 6px; }
       </ol></li>
     <li><a href="#noise-solving">Solving an aggressor</a></li>
     <li><a href="#noise-results">Waveforms and parasitics</a></li>
+    <li class="group">Signal Integrity analysis</li>
+    <li><a href="#si-concepts">Signal Integrity concepts</a></li>
+    <li><a href="#si-setup">Signal Integrity setup tabs</a>
+      <ol>
+        <li><a href="#si-scan">Quick Scan</a></li>
+        <li><a href="#si-channels">Channels</a></li>
+        <li><a href="#si-results">Results</a></li>
+        <li><a href="#si-settings">Settings</a></li>
+      </ol></li>
+    <li><a href="#si-plots">SI plots</a></li>
+    <li><a href="#si-3d">3D check with openEMS</a></li>
     <li class="group">Workflows</li>
     <li><a href="#workflows">Step-by-step workflows</a></li>
     <li class="group">Reference</li>
@@ -221,8 +232,8 @@ guide.</div>
 <p>KiPI is a power integrity (PI) analyzer that runs as a KiCad 9/10 plugin. It reads the
 copper of your board straight from the PCB editor and simulates how power gets from your
 regulators to the parts that use it. It also runs <a href="#window">standalone</a>, without
-KiCad, on board files. It has two analysis modes, chosen at the right end of the
-toolbar:</p>
+KiCad, on board files. It has four analysis modes, chosen at the right end of the
+toolbar: DC, AC, Coupled Noise and <a href="#si-concepts">Signal Integrity</a>.</p>
 <p class="callout"><b>New to power integrity?</b> The <a href="solver-guide.html">Solver
 Guide</a> explains what PI analysis is, why it matters, and how the mesh and the DC, thermal
 and AC solvers work.</p>
@@ -238,6 +249,15 @@ and AC solvers work.</p>
     with frequency, and is it below the device's target impedance?</td><td class="wrap">|Z|
     versus frequency curves for each probe point, a cursor to read values off them, and
     PASS/FAIL against a flat or custom target mask.</td></tr>
+  <tr><td><b>Noise</b></td><td class="wrap">How much of a switching regulator's noise couples
+    onto nearby signal nets, and is it within each receiver's noise margin?</td><td
+    class="wrap">The switcher's waveforms, each victim's noise by mechanism, PASS/FAIL, and
+    where it couples in 3D.</td></tr>
+  <tr><td><b>SI</b></td><td class="wrap">Are the signal nets' impedance, return paths,
+    crosstalk and stubs right, and does a channel's eye open at its interface's rate?</td><td
+    class="wrap">A Quick Scan of every signal net; for a channel, S-parameters, TDR, eyes
+    with equalisation, COM, waveforms with IBIS or generic buffers, PASS/FAIL, Touchstone
+    and an optional openEMS 3D check.</td></tr>
 </table>
 <p>KiPI infers nothing about your power system from the schematic. You tell it where the
 regulators are, what each load draws, which parts sit in series between nets, and (for AC)
@@ -279,7 +299,7 @@ time you solve, so the next session starts where you left off.</p>
 <summary>AC impedance of one rail <span class="hint">after the DC setup has a VRM on the rail</span></summary>
 <div class="body">
 <ol class="steps">
-  <li>Switch <b>Mode</b> (right end of the toolbar) to <b>AC</b>. The setup panel becomes
+  <li>Switch the mode (start of the toolbar, under <b>Power Integrity</b>) to <b>AC</b>. The setup panel becomes
     the <b>AC setup</b>; VRMs and series links are shared with DC.</li>
   <li>Make sure the rail's net, its ground and every net its capacitors connect to are ticked
     in the Nets list.</li>
@@ -455,8 +475,10 @@ of decimals, plus more when a small typed value needs them.</p>
     KiPI never checks on its own. In standalone KiPI started by its launcher,
     <b>Manage dependencies…</b> closes KiPI and opens its setup (for example to add or
     remove PARDISO).</td></tr>
-  <tr><td><b>Mode: DC / AC</b></td><td class="wrap">Chooses the analysis. The setup dock
-    shows that mode's panel. The DC setup and results are kept while you are in AC and come
+  <tr><td><b>Power Integrity: DC / AC / Noise<br>Signal Integrity: SI</b></td><td class="wrap">
+    Chooses the analysis, at the start of the toolbar (<b>Ctrl+1</b> to <b>Ctrl+4</b>). The
+    setup dock shows that mode's panel; <b>Import…</b> and <b>Auto-fill rail…</b> fill the
+    power tree, so they are in the Power Integrity modes only. The DC setup and results are kept while you are in AC and come
     back when you switch to DC. You cannot switch while a task is running.</td></tr>
 </table>
 </div>
@@ -582,6 +604,12 @@ load, series link, capacitor or probe must be ticked first.</p>
   <tr><td><b>All power</b></td><td class="wrap">Ticks every power and ground net, keeping
     any others already ticked.</td></tr>
   <tr><td><b>None</b></td><td class="wrap">Unticks everything.</td></tr>
+  <tr><td>Selecting nets</td><td class="wrap">Click a net (Ctrl or Shift for more) to
+    pick it out in 3D: every other net is dimmed and the selected nets are drawn in
+    full color over everything, so you can follow them under planes and on other layers. <b>Esc</b> in
+    the list clears the selection. In SI mode, the selected Quick Scan net, or the
+    selected channel with its series nets and aggressors, is picked out the same way.
+    <b>Dim other nets</b> (Display) turns this off.</td></tr>
 </table>
 <p>The ticked nets are saved with the setup. A board with no saved choice starts with a guess:
 its largest power planes and the main ground. Building the 3D copper of a big net takes a
@@ -609,7 +637,8 @@ Hiding layers does not change the result colors; set the
     Colors</i> in KiCad), read again on every <b>Load from KiCad</b>; the log names the theme.
     If the theme cannot be read, KiCad's default theme colors are used.</td></tr>
   <tr><td><b>Z scale</b></td><td class="wrap">Stretches the stackup vertically (1× to 100×)
-    so the layers can be told apart. It only changes the drawing.</td></tr>
+    so the layers can be told apart. It starts at 1×, the board's true proportions. It only
+    changes the drawing.</td></tr>
   <tr><td><b>Opacity</b></td><td class="wrap">How solid the copper layers and pads are
     drawn, from 5% to 100%, in both the plain and the result views. Lower it to see the
     layers beneath; vias stay solid.</td></tr>
@@ -644,9 +673,9 @@ Hiding layers does not change the result colors; set the
     Models is ticked, since it goes to the part's marks. Untick it to keep the view where it
     is; the part is still marked and blinks. KiPI remembers the choice.</td></tr>
   <tr><td id="models"><b>3D Models</b></td><td class="wrap">Shows the KiCad 3D models of every
-    part on the board. In the geometry view they are on to start with; over results they start
-    hidden, and ticking <b>3D Models</b> there shows them too. Each view remembers its own
-    setting. See <a href="#part-models">Part 3D models</a> below.</td></tr>
+    part on the board. They start hidden, so a board opens without waiting for them; tick
+    <b>3D Models</b> to load and show them. The geometry and the result views each keep
+    their own setting. See <a href="#part-models">Part 3D models</a> below.</td></tr>
   <tr><td id="guess-models"><b>Guess models</b></td><td class="wrap">Picks models from KiCad's
     library for the parts that have none, by footprint name, and ticks <b>3D Models</b>.
     Only when clicked; see <a href="#part-models">Part 3D models</a>.</td></tr>
@@ -718,6 +747,9 @@ standalone KiPI does not.</p>
     the <a href="#info">Info</a> box and the status bar. Clicks pass through
     <a href="#part-models">part models</a>.</td></tr>
 </table>
+<p>In the panels the scroll wheel always scrolls the panel. It never changes the number,
+list or slider under the pointer: type a value, use the arrow keys or the spin buttons,
+or click the list instead.</p>
 <p>In AC mode two more tabs appear beside <b>3D view</b>: <b>Impedance</b>, with the
 <a href="#ac-plot">impedance plot</a>, and <b>Board map</b>, with the
 <a href="#ac-map">mesh and parts of the solve</a>.</p>
@@ -747,7 +779,7 @@ tooltip names its key. On macOS, <b>Ctrl</b> is the <b>Command</b> key.</p>
   <tr><td><b>Ctrl+Shift+O</b></td><td class="wrap"><b>Open results…</b></td></tr>
   <tr><td><b>Ctrl+L</b></td><td class="wrap">The <a href="#stackup">Stackup window</a></td></tr>
   <tr><td><b>Ctrl+T</b></td><td class="wrap">The <b>Power tree</b></td></tr>
-  <tr><td><b>Ctrl+1</b> / <b>Ctrl+2</b> / <b>Ctrl+3</b></td><td class="wrap">DC / AC / Coupled Noise mode</td></tr>
+  <tr><td><b>Ctrl+1</b> / <b>Ctrl+2</b> / <b>Ctrl+3</b> / <b>Ctrl+4</b></td><td class="wrap">DC / AC / Coupled Noise / Signal Integrity mode</td></tr>
   <tr><td><b>Ctrl+Enter</b></td><td class="wrap">Solve: <b>Solve all</b> in DC mode,
     <b>Solve rail</b> in AC mode, when the button can be pressed</td></tr>
   <tr><td><b>Esc</b></td><td class="wrap"><b>Cancel</b> the running operation</td></tr>
@@ -2237,6 +2269,233 @@ the results: check it, as its currents have nowhere real to go.</p>
 </div>
 </details>
 
+<!-- ================================================================== SI -->
+<h2 id="si-concepts">Signal Integrity concepts</h2>
+<p><b>Signal Integrity</b> mode (<b>Ctrl+4</b>) checks how signals travel along the board's
+traces. It works at two levels:</p>
+<ul>
+  <li>The <b>Quick Scan</b> looks at every signal net at once, for the layout
+    faults that spoil signals: impedance off target, too much coupling to a neighbour, a
+    trace with no reference plane under it or crossing a gap in one, a layer change with no
+    return via near it, a via stub that resonates in band, and skew within a pair.</li>
+  <li>A <b>channel</b> is one net or differential pair from a driving part to a receiving
+    one, through any series resistors and AC-coupling capacitors. Solving it gives what a
+    commercial SI tool would: S-parameters, TDR, eye diagrams with equalisation, COM, and
+    waveforms with real (IBIS) or generic buffers, each checked against its interface.</li>
+</ul>
+<p><b>How it is modelled.</b> Each trace is cut into short sections. At each, a 2D finite
+element field solve of the cross-section (the trace, its neighbours within the window, the
+planes and every dielectric layer, solder mask included) gives the per-unit-length R, L, G
+and C matrices: the capacitance from the field, the inductance from the field without
+dielectric, the dielectric loss from a wideband (Djordjevic-Sarkar) model of each laminate
+fitted at its datasheet frequency, and the conductor loss from the surface charge (Wheeler's
+rule) with skin effect and the copper's roughness. Each section is a coupled lossy
+transmission line. Each via is a chain of barrel inductance and pad-to-plane capacitance
+(from an axisymmetric field solve), with its stub, and its return current between the
+planes: the plane pair's impedance matrix of all the channel's vias, with the stitching
+vias near them shorted, or, where the two planes are of different nets (ground and a
+supply), the capacitors joining those nets nearest them, each ended in its capacitance, ESR
+and 1 nH of inductance with its mounting. A pair's two vias are coupled through the planes they share, and
+without stitching the cavity resonates. The sections, vias, series parts and the buffers' packages make one circuit,
+solved over frequency.</p>
+<p><b>From S-parameters to eyes.</b> With the interface's source and termination
+resistances and the receiver's capacitance at the ports, the channel's transfer function
+gives its response to one bit (the pulse response). The <b>statistical eye</b> adds up
+every pattern of the neighbouring bits, the interface's random and deterministic jitter
+and noise, and each aggressor's crosstalk, to the target bit error ratio (BER). The
+equaliser (the transmitter's FFE presets, the receiver's CTLE and DFE) that opens it most is
+found by search. <b>COM</b> (channel operating margin) is the eye's main cursor over its
+noise at the target BER, in dB: 3 dB or more passes. The <b>transient</b> runs the
+buffers' own (IBIS or generic) I-V and switching curves at the ports through the channel's
+S-parameters, for overshoot, ringback and edge shape.</p>
+<div class="callout warn"><b>Accuracy:</b> the cross-sections agree with closed forms within
+about 2 % (microstrip and stripline impedance) and their loss with Wheeler's rule within
+about 3 %. Vias and discontinuities are approximations; the <a href="#si-3d">3D check</a>
+compares one with a full-wave solve.</div>
+
+<h2 id="si-setup">Signal Integrity setup tabs</h2>
+<p>The top of the panel picks the <b>Channel</b> to show; it is also the one selected in
+<b>Channels</b>. What a channel still needs is listed under it. <b>Solve</b> is at the foot
+of the channel's settings, so a channel is set up and solved in one place;
+<b>Ctrl+Return</b> solves it from any tab.</p>
+<p>To solve several channels at once, tick them in the <b>Channels</b> list (or <b>Tick
+all</b>): Solve becomes <b>Solve N ticked</b> and solves them one after another, on the
+board indexed once. Each result shows as it finishes, and each channel's row says PASS,
+WARN, FAIL or ERROR; pick a channel to see its checks and plots. <b>Cancel</b> stops
+between channels and keeps the ones done. With nothing ticked, Solve solves the channel
+picked. The ticks are saved with the setup.</p>
+<p>In SI mode the <b>Nets</b> list in <b>Board</b> lists signal nets, not power: pairs
+first, then single nets, then slow control nets (greyed), then ground and power, each
+tagged. It keeps its own ticks, apart from the PI modes'. These start as the channels'
+nets and their aggressors, or every pair when there are no channels yet. <b>Signal nets
+only</b> hides the ground and power nets, and <b>All pairs</b> ticks every pair.</p>
+<details open id="si-scan">
+<summary>Quick Scan</summary>
+<div class="body">
+<p>Choose <b>Every signal net</b> or <b>The nets ticked in Board</b>, and click <b>Scan</b>.
+The table lists each net (pairs together: nets named <code>_P</code>/<code>_N</code>,
+<code>+</code>/<code>-</code>, <code>DP</code>/<code>DM</code> and the like) with its result
+(failing first), its impedance range, length, worst crosstalk coefficient and the aggressor,
+any length without a reference, its longest via stub and its pair skew. Select a net for
+each finding and where it is. With <b>Impedance in 3D</b>, the 3D view colors the scanned
+traces by how far their impedance is from target: blue below, red above.</p>
+<p>Targets: <b>Z0 target</b> for single-ended nets; for pairs, <b>Zdiff target</b>, or by
+name (USB 90 Ω, USB4 and PCIe 85 Ω, else 100 Ω): the net's own name first (PCIe's
+lane names, PETp0 or M2_PER3_N, count as PCIe), its sheet's only when that says nothing,
+so a lane on a sheet named for USB4 is not taken for USB4. <b>Make a channel</b> adds the selected net (and its
+pair) as a channel, with its worst neighbour as an aggressor.</p>
+<p><b>Slow nets</b>: nets named as slow controls are left out unless this is ticked. These
+are enables, resets, power-good, LEDs, interrupts, I²C, JTAG, FPGA configuration and
+straps, and their impedance seldom matters. The summary under the table names the nets left
+out. Pairs are always scanned, and so is every net when you scan <b>The nets ticked in
+Board</b>.</p>
+<p><b>Speed.</b> The scan is a first look, so each cut keeps only what affects its trace:
+the copper between the trace's nearest solid planes above and below, out to five times its
+height over them on either side (more for a pair, to cover its partner). Cuts that come out
+alike are solved once, with a mesh about 2 % coarser in accuracy than a channel's. The
+solves run in parallel on all but one of the CPU cores, and a second scan of the same board
+reuses the first one's cuts and solves. On ThunderScope (6 layers, 390 signal nets, about
+28,000 cuts) the first scan takes about 3 minutes on a 6-core laptop, and a rescan a few
+seconds. Channels are solved at full accuracy.</p>
+</div>
+</details>
+<details open id="si-channels">
+<summary>Channels</summary>
+<div class="body">
+<p><b>Add bus…</b> makes many channels at once, for a memory interface, an ADC's data
+lanes or SerDes lanes. Pick the <b>Transmitter</b> part (parts with the most signal nets
+first) and the <b>Receiver</b> (the parts joined to it, with how many nets join them). Every
+signal net between the two is listed, also through series resistors and AC-coupling
+capacitors. Pairs are found by name, and nets are grouped and numbered by name (DQ0–DQ7,
+DQS0, A0–A15). Tick the nets, or use <b>Tick group</b> to pick one group, such as one
+byte lane's DQ. Then choose the <b>Interface</b> (or let each net's name choose it) and
+the <b>Neighbours as aggressors</b>: with 1, DQ3 gets DQ2 and DQ4 as its aggressors. Each
+channel gets both ends set. Nets that are already channels are greyed out. For a
+bidirectional bus, add it again with <b>Swap</b> to get the reads.</p>
+<ul>
+  <li><b>Net</b> and <b>Pair with</b>: a single-ended net, or a pair's positive and negative
+    legs. <b>Through series parts</b> follows them through series resistors and capacitors
+    (read from their values) to the nets beyond.</li>
+  <li><b>Not fitted</b>: more parts this channel leaves off, comma separated, on top of
+    the build's (Settings, <b>Build</b>): for a board whose variants are kept outside
+    KiCad, list them from the variant's BOM. The channel does not go through them; their
+    empty pads stay on it as stubs. Under it, <b>Also not fitted</b> names the build's
+    parts on the channel's nets.</li>
+  <li><b>Interface</b>: Custom, LVDS, USB 2.0 and 3.2, USB4 Gen 2 and 3, PCIe 2 to 5, SATA
+    III, HDMI 2.0, SGMII, 10GBASE-KR, MIPI D-PHY, DDR4 DQ or CMOS logic. It sets the rate, swing, edge,
+    terminations, equaliser and the limits checked. Any of them can be overridden below; at
+    its lowest, a field shows <i>interface's</i> and uses the interface's value.</li>
+  <li><b>Transmitter</b> and <b>Receiver</b>: pick from the parts on the channel's nets
+    (series parts left out), or type a reference. <b>guessed</b> shows the part KiPI would
+    use: the net's two farthest parts, an IC driving, or, with one end set, the part
+    farthest from it. <b>Swap</b> turns a bidirectional net round (a DDR read instead of a
+    write).</li>
+  <li><b>Aggressors</b>: nets whose near- and far-end crosstalk into the channel is solved
+    with it, and added to its eye.</li>
+  <li><b>Driver buffer</b> and <b>Receiver buffer</b>: <b>Generic</b> (a supply, an output
+    resistance, a 0–100 % edge and a pad capacitance; <b>Match generic buffers to the
+    interface</b> fills them in, both ends' pad capacitance the interface's), or an <b>IBIS model</b>: the <code>.ibs</code> file, its
+    model, the pin (for its own package R, L and C) and the corner.</li>
+</ul>
+</div>
+</details>
+<details open id="si-results">
+<summary>Results</summary>
+<div class="body">
+<p>The channel's PASS, WARN or FAIL, and its checks:</p>
+<table>
+  <tr><th>Check</th><th>Passes when</th></tr>
+  <tr><td>impedance</td><td class="wrap">every section within the tolerance of the target
+    (WARN: under 10 % of the length off)</td></tr>
+  <tr><td>insertion loss</td><td class="wrap">at Nyquist, above the interface's limit</td></tr>
+  <tr><td>return loss</td><td class="wrap">up to Nyquist, below the interface's limit</td></tr>
+  <tr><td>mode conversion</td><td class="wrap">Scd21 below −25 dB up to Nyquist (pairs)</td></tr>
+  <tr><td>skew</td><td class="wrap">P/N skew under 5 % of a UI</td></tr>
+  <tr><td>eye</td><td class="wrap">the statistical eye at the BER covers the receiver's
+    mask</td></tr>
+  <tr><td>COM</td><td class="wrap">3 dB or more (differential interfaces)</td></tr>
+  <tr><td>overshoot, ringback, monotonic</td><td class="wrap">from the transient at the
+    receiver's die: overshoot under 10 % of the swing, ringback clear of the thresholds,
+    edges monotonic through them</td></tr>
+  <tr><td>crosstalk</td><td class="wrap">each aggressor's NEXT and FEXT below −30 dB up to
+    Nyquist</td></tr>
+</table>
+<p>Below them: the notes (ports, nets, anything assumed), <b>Impedance in 3D</b> for the
+channel's sections, <b>Report</b> (HTML or PDF, with the channel's Touchstone file in it),
+<b>Export Touchstone…</b> (<code>.s2p</code> or <code>.s4p</code>, 50 Ω, ports at the dies),
+<b>Export SPICE…</b> and <b>Save results…</b>, which keeps every solved channel and the
+Quick Scan.</p>
+<p><b>Export SPICE…</b> fits the channel's S-parameters with a rational model (vector
+fitting, common poles, as many as it takes for an RMS error under 0.2 %), makes it passive
+if it is not quite (no singular value over 1 from DC to twice the band), and writes it as a
+SPICE subcircuit, <code>.subckt kipi_&lt;channel&gt; p1 … pN ref</code>, with the port names
+in its comments. It uses only resistors, capacitors and controlled sources, so any SPICE
+(ngspice, LTspice, a vendor's) can run the channel with its own driver and receiver
+models.</p>
+</div>
+</details>
+<details open id="si-settings">
+<summary>Settings</summary>
+<div class="body">
+<ul>
+  <li><b>Build</b>: the parts left off. <b>As on the board</b> leaves off the parts
+    marked DNP (do not populate) in KiCad; a KiCad 10 <b>assembly variant</b> leaves off
+    its own DNP parts instead (a variant leaves a part as the board has it unless it says
+    otherwise). No channel goes through a part left off, and Add bus does not join nets
+    through one. A board read from the running KiCad gives its parts' DNP but not its
+    variants: open the <code>.kicad_pcb</code> file for those.</li>
+  <li><b>Section length</b> and <b>Neighbour window</b>: how finely traces are cut, and how
+    far either side copper is in their cross-section.</li>
+  <li><b>Etch</b>: a trace's top narrower than its bottom by this, each side.</li>
+  <li><b>Copper roughness</b>: Smooth, Hammerstad or Groisse (from the RMS roughness), or
+    Huray (nodule radius and surface ratio). Rough copper adds loss as the skin depth
+    shrinks.</li>
+  <li><b>Model vias</b>: untick to join layers at vias with no via model.</li>
+  <li><b>Highest frequency</b> and <b>Step</b> of the sweep: by default up to five times
+    Nyquist (and at least three over the edge), the step small enough for 64 UI of
+    response.</li>
+  <li>The Quick Scan's targets and limits, and the 3D check's mesh and region.</li>
+</ul>
+<p>The dielectrics' loss tangents come from the board's stackup where it has them, else the
+AC setup's loss tangent.</p>
+</div>
+</details>
+
+<h2 id="si-plots">SI plots</h2>
+<p>The <b>SI plots</b> tab shows the channel picked in the panel. <b>Show</b> picks:</p>
+<ul>
+  <li><b>Eye diagram</b>: the statistical eye's probability (log colour scale), centred on
+    the eye, with its contours at the target BER (solid) and at 10<sup>−3</sup>,
+    10<sup>−6</sup> and 10<sup>−9</sup> (dashed), the eye height and width as arrows, and
+    the receiver's mask. Under it, the <b>bathtub</b> gives the BER of a bit sampled at the
+    threshold against time. <b>Equalised</b> shows it after the chosen equaliser (untick for
+    the raw channel). <b>PRBS waveform</b> shows the eye of the channel's PRBS pattern
+    instead, its traces drawn as lines, without jitter or noise.</li>
+  <li><b>Impedance (TDR)</b>: the impedance seen from the driver along the channel, with the
+    interface's edge; vias and connectors show as dips and bumps.</li>
+  <li><b>S-parameters</b>: insertion and return loss (differential for pairs), mode
+    conversion and each aggressor's NEXT and FEXT, with Nyquist and the limits marked.</li>
+  <li><b>Waveforms at the dies</b>: the transient with the buffers, at the driver and the
+    receiver.</li>
+  <li><b>Pulse response</b>: one bit through the channel, with its cursors one UI apart.</li>
+  <li><b>3D check</b>: openEMS beside KiPI, after a <a href="#si-3d">3D check</a>.</li>
+</ul>
+
+<h2 id="si-3d">3D check with openEMS</h2>
+<p><a href="https://www.openems.de">openEMS</a> is a free full-wave (FDTD) field solver. With
+it installed (on the PATH, in <code>~/opt/openEMS</code>, or named by the
+<code>KIPI_OPENEMS</code> environment variable), pick a via of the solved channel under
+<b>3D check (openEMS)</b> on the Results tab and click <b>Run</b>. KiPI builds a 3D model of
+the copper around it (the Settings' <b>Region margin</b> beyond it): copper as thin sheets,
+the vias as barrels, the planes with their antipads, ports where the traces leave the region.
+The planes and the dielectric run on into the model's absorbing walls, as the board's go on
+past the region. KiPI's own model of the region takes its planes as unbounded to match. It
+runs openEMS once per port, and plots the S-parameters beside those of its own model of the
+same region, from the same ports. A difference of a dB or less in the through path is good
+agreement. On the example board's USB via the two agree within 0.5 dB from 1 to 10 GHz. The
+reflection is small in both, but openEMS shows it about 6 dB higher, partly from its lumped
+ports (a plain trace shows a similar offset), so treat it as an upper bound. It takes minutes; the progress bar follows openEMS's energy as it decays.</p>
+
 <!-- ================================================================== WORKFLOWS -->
 <h2 id="workflows">Step-by-step workflows</h2>
 
@@ -2410,6 +2669,12 @@ them a model or confirm they really do not belong on this rail.</p>
     Noise report, written with the Report button</td></tr>
   <tr><td><code>*.kipi-noise-results</code></td><td class="wrap">Saved Coupled Noise results,
     every solved aggressor (Save results… / Open results… in Coupled Noise mode)</td></tr>
+  <tr><td><code>*_si_report_*.html</code>, <code>.pdf</code></td><td class="wrap">Signal
+    Integrity report of a channel, written with the Report button</td></tr>
+  <tr><td><code>*.kipi-si-results</code></td><td class="wrap">Saved Signal Integrity results:
+    every solved channel and the Quick Scan</td></tr>
+  <tr><td><code>*.s2p</code>, <code>*.s4p</code></td><td class="wrap">A channel's
+    S-parameters (Touchstone), from Export Touchstone…</td></tr>
   <tr><td><code>*.kipi-ac-results</code></td><td class="wrap">Saved AC results, every rail
     solved, in the same format.</td></tr>
   <tr><td><code>&lt;board&gt;_kipi_report_&lt;date&gt;_&lt;time&gt;.html</code></td><td class="wrap">The DC HTML report.</td></tr>
@@ -2517,7 +2782,7 @@ standalone KiPI) from the temporary folder.</p></div>
 <details id="ts-models">
 <summary>No part models are drawn</summary>
 <div class="body"><ul>
-  <li>Check <b>3D Models</b> is ticked in <a href="#display">Display</a>. Over results it starts
+  <li>Check <b>3D Models</b> is ticked in <a href="#display">Display</a>. It starts
     unticked.</li>
   <li>The log says why. KiPI needs KiCad's <code>kicad-cli</code>: it looks in the connected
     KiCad, the PATH, the usual install folders and a Flatpak KiCad. Otherwise set the

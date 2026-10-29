@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "SI_Demo")(type "KiCad")(uri "${KIPRJMOD}/SI_Demo.pretty")(options "")(descr "KiPI SI demo footprints"))
+)

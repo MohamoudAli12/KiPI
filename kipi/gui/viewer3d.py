@@ -57,6 +57,7 @@ _PI_DOT_PICK_PX = 8
 # Coupled Noise's coupling overlay (#152): the victim's traces as tubes this many pixels
 # wide, and the common-ground dot.
 _COUPLING_LINE_PX = 7
+_COUPLING_NAN = "#8c8c8c"     # a segment with no value (an SI pair's leg on its own)
 _COUPLING_DOT_PX = 18
 # Its hot loops (#178): each capacitor's current path as a tube, with cones along it the
 # way the current flows, and the capacitor's name at the capacitor.
@@ -152,6 +153,11 @@ def _copper_clim(scene: ResultScene, field: str) -> Tuple[float, float, bool]:
     if log_scale:
         lo = max(hi * 1e-4, 1e-30)      # four decades: loss is very concentrated
     return lo, hi, log_scale
+
+
+# Nets out of focus: lit this dimly (their actors' diffuse light), the focused ones drawn
+# again over everything, on a layer of their own.
+_DIM_DIFFUSE = 0.22
 
 
 def _chunk_actor(category, layer_opacity: float = 1.0) -> vtkActor:
@@ -271,6 +277,29 @@ def _pi_labels_actor(pts: np.ndarray, names: List[str], color) -> vtkActor2D:
 # start off, as they hide the result's colors.
 PER_VIEW = ("models", "mask", "silk")
 
+def _copper_boxes(segments, widths, z_spans):
+    """A box over each segment's copper (S quads of 6 faces), a little wider and thicker
+    than it so its faces show over the copper's own: KiCad's (x, y), y flipped as drawn."""
+    a = segments[:, 0, :2] * np.array([1.0, -1.0])
+    b = segments[:, 1, :2] * np.array([1.0, -1.0])
+    d = b - a
+    ln = np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-12)
+    nrm = np.column_stack([-d[:, 1], d[:, 0]]) / ln[:, None]
+    hw = (0.5 * widths * 1.04 + 0.002)[:, None]
+    t = z_spans[:, 1] - z_spans[:, 0]
+    eps = np.maximum(0.002, 0.1 * t)
+    z0, z1 = z_spans[:, 0] - eps, z_spans[:, 1] + eps
+    corners = [a - nrm * hw, a + nrm * hw, b + nrm * hw, b - nrm * hw]
+    pts = np.concatenate([np.column_stack([c, z]) for z in (z0, z1) for c in corners])
+    n = len(segments)
+    k = np.arange(n)
+    v = [k + i * n for i in range(8)]       # 0-3 bottom, 4-7 top
+    quads = [(v[0], v[3], v[2], v[1]), (v[4], v[5], v[6], v[7]), (v[0], v[1], v[5], v[4]),
+             (v[1], v[2], v[6], v[5]), (v[2], v[3], v[7], v[6]), (v[3], v[0], v[4], v[7])]
+    faces = np.stack([np.column_stack([np.full(n, 4), *q]) for q in quads], axis=1)
+    return pv.PolyData(pts, faces=faces.reshape(-1), deep=True)
+
+
 class Viewer3D(QWidget):
     """3D view of the board body plus individually added nets, with visibility controls.
 
@@ -301,6 +330,10 @@ class Viewer3D(QWidget):
         self._hidden_layers: set = set()
         self._included_nets: set = set()
         self._hide_non_included = False
+        self._focus_nets: Optional[frozenset] = None    # the nets drawn at full color
+        self._dim_others = True
+        self._focus_renderer = None                     # their layer, made when first used
+        self._focus_actors: Dict[tuple, vtkActor] = {}
         self._show_pads = True
         self._show_vias = True
         self._show_board = True
@@ -309,7 +342,8 @@ class Viewer3D(QWidget):
         self._show_mask_result = False      # over results they keep their own settings,
         self._show_silk_result = False      # off until asked for (#144)
         self._coating_actors: List[Tuple[str, object]] = []      # (kind, actor)
-        self._show_models = True            # in the copper (geometry) view
+        self._show_models = False           # in the copper (geometry) view: off until
+        #                                     asked for, as loading them takes a while
         self._show_models_result = False    # over results: off until asked for
         self._show_pi = False               # PI Models markers, copper view only
         self._pi_markers: list = []
@@ -375,6 +409,8 @@ class Viewer3D(QWidget):
         self._remove_model_actors()
         self._models = {}
         self._batch = MeshBatcher()
+        self._focus_nets = None
+        self._clear_focus_actors()
         self._net_color.clear()
         self._layer_color.clear()
         self._clear_result_actors()
@@ -565,9 +601,23 @@ class Viewer3D(QWidget):
     def coupling(self):
         return self._coupling
 
+    def _coupling_to_focus(self):
+        """Put the overlay on the picked-out nets' layer too: drawn over everything, those
+        nets' copper would hide it."""
+        r = getattr(self, "_focus_renderer", None)
+        if r is None:
+            return
+        for a in self._coupling_actors:
+            r.RemoveActor(a)
+            if self._dimming():
+                r.AddActor(a)
+
     def _remove_coupling_actors(self):
         p = self.plotter
+        r = getattr(self, "_focus_renderer", None)
         for a in self._coupling_actors:
+            if r is not None:
+                r.RemoveActor(a)
             p.remove_actor(a, render=False)
         self._coupling_actors = []
         if self._coupling_bar is not None:
@@ -599,8 +649,17 @@ class Viewer3D(QWidget):
                 mesh, scalars="share", cmap="coolwarm", clim=(lo, hi), line_width=_COUPLING_LINE_PX,
                 render_lines_as_tubes=True, lighting=False, show_scalar_bar=True,
                 scalar_bar_args=bar, name="coupling:victim", pickable=False,
-                reset_camera=False, render=False))
+                reset_camera=False, render=False, nan_color=_COUPLING_NAN))
             shown_bar = True
+            if ov.widths is not None and ov.z_spans is not None:
+                # The lines are a few pixels wide, inside the copper once zoomed in: the
+                # traces themselves are coloured too, by boxes just over their copper.
+                cover = _copper_boxes(ov.segments, ov.widths, ov.z_spans)
+                cover.cell_data["share"] = np.repeat(ov.segment_mv, 6)
+                self._coupling_actors.append(p.add_mesh(
+                    cover, scalars="share", cmap="coolwarm", clim=(lo, hi), lighting=False,
+                    show_scalar_bar=False, name="coupling:copper", pickable=False,
+                    reset_camera=False, render=False, nan_color=_COUPLING_NAN))
         if len(ov.points):
             dots = pv.PolyData(ov.points * np.array([1.0, -1.0, 1.0]), deep=True)
             dots.point_data["share"] = ov.point_mv
@@ -612,6 +671,7 @@ class Viewer3D(QWidget):
             shown_bar = True
         for a in self._coupling_actors:
             a.SetScale(1.0, 1.0, self._zscale)
+        self._coupling_to_focus()
         if shown_bar and ov.title in p.scalar_bars:
             b = p.scalar_bars[ov.title]
             b.SetTextPositionToPrecedeScalarBar()
@@ -877,6 +937,7 @@ class Viewer3D(QWidget):
     def _flush(self):
         """Rebuild changed chunks and sync their actors."""
         renderer = self.plotter.renderer
+        touched = False
         for chunk in self._batch.take_dirty():
             actor = self._chunk_actors.get(chunk)
             visible_nets = self._included_nets if self._hide_non_included else None
@@ -892,7 +953,11 @@ class Viewer3D(QWidget):
                 renderer.AddActor(actor)
                 self._chunk_actors[chunk] = actor
                 self._apply_actor_visibility(chunk.category, actor)
+                self._light(chunk.category, actor)
             actor.GetMapper().SetInputData(mesh)
+            touched = True
+        if touched and self._dimming():
+            self._draw_focus()                  # a focused net's copper may have changed
 
     def render(self):
         self._flush()
@@ -923,6 +988,89 @@ class Viewer3D(QWidget):
         if self._hide_non_included:
             self._batch.mark_all_dirty()
             self.render()
+
+    def _dimming(self) -> bool:
+        return bool(self._dim_others and self._focus_nets)
+
+    def set_focus_nets(self, nets):
+        """Draw ``nets`` at full color, over everything, and every other net dimmed, to
+        pick them out (None or empty: every net alike). Nothing is rebuilt and nothing
+        made see-through: the other nets' actors are lit dimly and the focused nets drawn
+        again on a layer of their own, so the view stays as fast."""
+        nets = frozenset(nets) if nets else None
+        if nets == self._focus_nets:
+            return
+        self._focus_nets = nets
+        self._update_focus()
+
+    @property
+    def focus_nets(self) -> Optional[frozenset]:
+        return self._focus_nets
+
+    def set_dim_others(self, on: bool):
+        """Dim the nets other than the focused ones (True) or draw all alike."""
+        on = bool(on)
+        if on == self._dim_others:
+            return
+        self._dim_others = on
+        if self._focus_nets:
+            self._update_focus()
+
+    def _update_focus(self):
+        for chunk, actor in self._chunk_actors.items():
+            self._light(chunk.category, actor)
+        self._draw_focus()
+        self.plotter.render()
+
+    def _light(self, category, actor):
+        prop = actor.GetProperty()
+        dim = self._dimming()
+        prop.SetDiffuse(_DIM_DIFFUSE if dim else 1.0)
+        prop.SetSpecular(0.0 if dim else _CATEGORY_LOOK[category[0]][1])
+
+    def _focus_layer(self):
+        if self._focus_renderer is None:
+            from vtkmodules.vtkRenderingCore import vtkRenderer
+            rw = self.plotter.render_window
+            r = vtkRenderer()
+            r.SetLayer(rw.GetNumberOfLayers())
+            rw.SetNumberOfLayers(rw.GetNumberOfLayers() + 1)
+            r.SetInteractive(False)
+            r.SetActiveCamera(self.plotter.renderer.GetActiveCamera())
+            rw.AddRenderer(r)
+            self._focus_renderer = r
+        return self._focus_renderer
+
+    def _clear_focus_actors(self):
+        if self._focus_renderer is not None:
+            for a in list(self._focus_actors.values()) + self._coupling_actors:
+                self._focus_renderer.RemoveActor(a)
+        self._focus_actors.clear()
+
+    def _draw_focus(self):
+        """The focused nets' copper, pads and vias, on their own layer."""
+        self._clear_focus_actors()
+        if not self._dimming():
+            return
+        nets = self._focus_nets
+        if self._hide_non_included:
+            nets = nets & self._included_nets
+        r = self._focus_layer()
+        for cat, mesh in self._batch.meshes_of(nets).items():
+            actor = _chunk_actor(cat, self._layer_opacity)
+            actor.SetScale(1.0, 1.0, self._zscale)
+            actor.GetMapper().SetInputData(mesh)
+            actor.SetPickable(False)
+            self._apply_actor_visibility(cat, actor)
+            if self._result is not None:
+                actor.SetVisibility(False)
+            r.AddActor(actor)
+            self._focus_actors[cat] = actor
+        self._coupling_to_focus()
+        # The layer shares the board's camera: fit its clipping range to the whole board
+        # (which holds these nets too), not to these nets alone, or the near plane cuts
+        # the rest of the board off.
+        self.plotter.renderer.ResetCameraClippingRange()
 
     def set_hide_non_included(self, hidden: bool):
         """Show only included nets in the geometry view when ``hidden`` is true."""
@@ -972,6 +1120,10 @@ class Viewer3D(QWidget):
                 actor.SetVisibility(False)
             else:
                 self._apply_actor_visibility(chunk.category, actor)
+        for cat, actor in self._focus_actors.items():
+            self._apply_actor_visibility(cat, actor)
+            if showing_result:
+                actor.SetVisibility(False)
         for lid, actor in self._result_actors.items():
             actor.SetVisibility(lid not in self._hidden_layers)
         for lid, actor in self._arrow_actors.items():
@@ -1013,7 +1165,7 @@ class Viewer3D(QWidget):
             a.SetScale(1.0, 1.0, self._zscale)
         for _, a in self._coating_actors:
             a.SetScale(1.0, 1.0, self._zscale)
-        for a in self._chunk_actors.values():
+        for a in (*self._chunk_actors.values(), *self._focus_actors.values()):
             a.SetScale(1.0, 1.0, self._zscale)
         for a in self._result_actors.values():
             a.SetScale(1.0, 1.0, self._zscale)
@@ -1049,6 +1201,8 @@ class Viewer3D(QWidget):
                 actor.GetProperty().SetOpacity(_CATEGORY_LOOK[kind][0] * self._layer_opacity)
         for actor in self._result_actors.values():
             self._apply_result_opacity(actor)
+        if self._dimming():
+            self._draw_focus()
         self._set_depth_peeling(self._layer_opacity < 1.0)
         self.plotter.render()
 

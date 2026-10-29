@@ -1,0 +1,232 @@
+vrms: []
+loads: []
+links: []
+settings:
+  max_edge_mm: 0.5
+  min_angle_deg: 28.0
+  simplify_mm: 0.003
+  circle_quad_segs: 4
+  min_edge_mm: 0.02
+  grading: 0.2
+  via_rules:
+  - kind: micro
+    plating_mm: 0.012
+    drill_min_mm: 0.0
+    drill_max_mm: null
+    fill: nonconductive
+    fill_rho_ohm_mm: null
+  - kind: buried
+    plating_mm: 0.013
+    drill_min_mm: 0.0
+    drill_max_mm: null
+    fill: nonconductive
+    fill_rho_ohm_mm: null
+  - kind: blind
+    plating_mm: 0.02
+    drill_min_mm: 0.0
+    drill_max_mm: null
+    fill: nonconductive
+    fill_rho_ohm_mm: null
+  - kind: blind_buried
+    plating_mm: 0.02
+    drill_min_mm: 0.0
+    drill_max_mm: null
+    fill: nonconductive
+    fill_rho_ohm_mm: null
+  - kind: through
+    plating_mm: 0.02
+    drill_min_mm: 0.0
+    drill_max_mm: null
+    fill: nonconductive
+    fill_rho_ohm_mm: null
+  - kind: pth
+    plating_mm: 0.02
+    drill_min_mm: 0.0
+    drill_max_mm: null
+    fill: nonconductive
+    fill_rho_ohm_mm: null
+  - kind: any
+    plating_mm: 0.02
+    drill_min_mm: 0.0
+    drill_max_mm: null
+    fill: nonconductive
+    fill_rho_ohm_mm: null
+  rho_ohm_mm: 1.724e-05
+  tcr_per_c: 0.00393
+  rho_by_layer: {}
+  tcr_by_layer: {}
+  conductor_by_layer: {}
+  tol: 1.0e-10
+  max_iter: 2000
+via_current_limit_a: 1.0
+thermal:
+  enabled: false
+  ambient_c: 25.0
+  iterations: 3
+  airflow_m_s: 0.0
+  grid_mm: 0.0
+  load_power: false
+  max_temp_c: null
+  max_rise_c: null
+html_report: false
+report_format: html
+nets: null
+excluded_nets: []
+stackup: null
+caps: []
+probes: []
+packages: []
+ac:
+  f_start_hz: 1000.0
+  f_stop_hz: 300000000.0
+  points_per_decade: 250
+  field_points_per_decade: 20
+  max_edge_mm: 1.0
+  grading: 0.3
+  min_edge_mm: 0.03
+  grade_near_rail_only: true
+  loss_tangent: 0.02
+  default_er: 4.3
+  rail: ''
+  ground: ''
+  html_report: false
+  report_format: html
+  dc_bias: true
+  mfg_tolerance: false
+  aging: false
+  aging_hours: 87600.0
+  temperature: none
+  temperature_c: 25.0
+aggressors: []
+victims: []
+noise:
+  aggressor: ''
+  f_max_hz: null
+  max_harmonics: 4000
+  periods_shown: 2
+  dead_time_ns: 20.0
+  segment_mm: 0.5
+  window_mm: 3.0
+  board_model: true
+  field_per_decade: 10
+  victims: all
+  scan: false
+  scan_radius_mm: 10.0
+  scan_top_n: 10
+  scan_preset: hiz
+  scan_driver_ohm: 33.0
+  scan_logic_v: 3.3
+  html_report: false
+  report_format: html
+si_channels:
+- name: CLK
+  net: CLK
+  partner: ''
+  protocol: cmos
+  driver_ref: ''
+  receiver_ref: ''
+  driver:
+    kind: generic
+    vcc_v: 3.3
+    r_out_ohm: 25
+    edge_s: 1.666666666666667e-09
+    c_pf: 2.0
+    ibis_file: ''
+    ibis_model: ''
+    ibis_pin: ''
+    corner: typ
+  receiver:
+    kind: generic
+    vcc_v: 3.3
+    r_out_ohm: 33.0
+    edge_s: 5.0e-10
+    c_pf: 3.0
+    ibis_file: ''
+    ibis_model: ''
+    ibis_pin: ''
+    corner: typ
+  rate_bps: null
+  swing_v: null
+  rise_s: null
+  r_source_ohm: null
+  r_term_ohm: null
+  v_term_v: 0.0
+  series_r_ohm: 0.0
+  il_max_db: null
+  rl_max_db: null
+  eye_h_v: null
+  eye_w_ui: null
+  aggressors: []
+  follow_series: true
+  prbs: 7
+  use_ibis_eye: false
+  equalize: true
+- name: USB_P/USB_N
+  net: USB_P
+  partner: USB_N
+  protocol: usb2
+  driver_ref: ''
+  receiver_ref: ''
+  driver:
+    kind: generic
+    vcc_v: 0.8
+    r_out_ohm: 45
+    edge_s: 5.0e-10
+    c_pf: 2.0
+    ibis_file: ''
+    ibis_model: ''
+    ibis_pin: ''
+    corner: typ
+  receiver:
+    kind: generic
+    vcc_v: 0.8
+    r_out_ohm: 33.0
+    edge_s: 5.0e-10
+    c_pf: 0.5
+    ibis_file: ''
+    ibis_model: ''
+    ibis_pin: ''
+    corner: typ
+  rate_bps: null
+  swing_v: null
+  rise_s: null
+  r_source_ohm: null
+  r_term_ohm: null
+  v_term_v: 0.0
+  series_r_ohm: 0.0
+  il_max_db: null
+  rl_max_db: null
+  eye_h_v: null
+  eye_w_ui: null
+  aggressors: []
+  follow_series: true
+  prbs: 7
+  use_ibis_eye: false
+  equalize: true
+si:
+  segment_mm: 1.0
+  window_mm: 1.5
+  etch_mm: 0.0
+  roughness: huray
+  rq_um: 1.0
+  huray_radius_um: 0.5
+  huray_sr: 1.5
+  via_models: true
+  f_max_hz: null
+  df_hz: 20000000.0
+  scan_segment_mm: 2.0
+  z_target_ohm: 50.0
+  z_tol_pct: 10.0
+  diff_target_ohm: null
+  kb_limit: 0.03
+  scan_f_max_hz: 10000000000.0
+  skew_limit_mm: 0.15
+  stitch_radius_mm: 2.0
+  scan_nets: all
+  em_f_max_hz: 20000000000.0
+  em_fine_mm: 0.05
+  em_margin_mm: 2.0
+  em_end_db: -40.0
+  em_threads: 0
+  report_format: html
+format_version: 2

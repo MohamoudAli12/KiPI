@@ -7,6 +7,62 @@ milestones rather than versions that were ever set.
 ## 0.9.3 (in development)
 
 ### Added
+- **Solve several SI channels at once**. Tick channels in the Channels list (or Tick
+  all) and Solve becomes **Solve N ticked**: they are solved one after another on the
+  board indexed once, each result shown as it finishes and each row marked PASS, WARN,
+  FAIL or ERROR. Cancel stops between channels. The ticks are saved with the setup.
+- **Signal Integrity mode** (SI, **Ctrl+4**). A fourth analysis mode for signal nets:
+  - **Quick Scan** of every signal net (or the ticked ones). Each net is cut into
+    sections and each cross-section field-solved with its neighbours. Each net gets
+    PASS/WARN/FAIL for impedance (Z0, or Zdiff for pairs found by name), crosstalk, its
+    return path (no reference, plane gaps, layer changes without a return via), via stubs
+    resonating in band, and pair skew. The 3D view colors traces by impedance error.
+  - **Channels**: a net or pair, followed through series resistors and AC-coupling
+    capacitors, from driver to receiver. Parts marked DNP in KiCad, a KiCad 10 assembly
+    variant's DNP parts (Settings, **Build**) and a channel's own **Not fitted** parts
+    are left off. It is extracted from 2D field-solved coupled
+    lossy line sections (Djordjevic-Sarkar dielectrics, Hammerstad, Groisse or Huray
+    roughness) and physics-based via models (barrel, pads, antipads, stubs, and the return
+    through each plane pair's impedance matrix, with the stitching vias shorted, the
+    decoupling capacitors between planes of a supply and ground, and a pair's vias
+    coupled). This gives its S-parameters (mixed-mode
+    for pairs), TDR, statistical and PRBS eyes at the target BER with the best FFE, CTLE
+    and DFE, COM, and a transient with generic or IBIS buffers (I-V tables, waveforms or
+    ramp, package R/L/C, corners). It is checked against the interface's limits: Custom,
+    LVDS, USB 2.0/3.2, USB4 Gen 2/3, PCIe 2–5, SATA III, HDMI 2.0, SGMII, 10GBASE-KR,
+    MIPI D-PHY, DDR4 DQ or CMOS.
+  - **3D check with openEMS**: when openEMS is installed, a via's region is simulated in
+    3D and plotted beside KiPI's own model of it. The model's planes and dielectrics
+    run on into its absorbing walls, as the board's do past the region.
+  - **A fast Quick Scan on large boards.** Each cut keeps only the copper that affects its
+    trace: between its nearest planes and within five dielectric heights. Cuts that come
+    out alike are solved once, with a screening mesh, in parallel on the CPU's cores. A
+    rescan reuses the first scan's work, and slow control nets are left out unless asked
+    for. On ThunderScope (390 signal nets, about 28,000 cuts) a scan takes about 3 minutes
+    instead of about 80, and a rescan about 4 seconds. The cross-section solver is also
+    about twice as fast for channels.
+  - **Buses and channel ends.** **Add bus…** lists every signal net between a
+    transmitting part and a receiving part, also through series parts. It pairs and
+    groups the nets by name (DQ0–DQ7, DQS) and makes a channel of each ticked one, with
+    both ends set and its neighbours as aggressors. A channel's transmitter and receiver
+    are picked from the parts on its nets, with the guess shown and a **Swap** button.
+  - **Scrolling a panel no longer changes its fields.** The mouse wheel over a number,
+    a list or a slider scrolls the panel instead of changing the value.
+  - **The 3D view starts plainer**: part 3D models are hidden until **3D Models** is
+    ticked, and **Z scale** starts at 1× (the board's true proportions).
+  - **Selected nets picked out in 3D.** Nets selected in the Nets list, or the Quick
+    Scan net or channel selected in SI mode, are drawn in full color over everything,
+    and every other net is dimmed (**Dim other nets** turns it off). The view stays as fast.
+  - **The Nets list follows the mode.** In SI it lists signal nets (pairs first, slow
+    control nets greyed) and keeps its own ticks. The PI modes still list the power and
+    ground nets.
+  - **Eye diagrams** with contours at several BERs, the eye height and width marked, a
+    bathtub curve, and PRBS eyes drawn as continuous traces, alike in the app and the
+    report.
+  - HTML and PDF reports (with the channel's Touchstone file), Touchstone export, a
+    passive SPICE macromodel by vector fitting, and saved results (`.kipi-si-results`).
+- **Dielectric loss tangents from the board's stackup.** KiCad boards' layer loss
+  tangents are now read and kept with stackup edits; the SI mode uses them.
 - **Series links with more than two pins, from their SPICE models** (#193). Importing a
   SPICE model for a series link now also offers subcircuits with more than two pins,
   such as a common-mode choke, a feedthrough capacitor or a filter. The dialog maps each
@@ -123,6 +179,33 @@ milestones rather than versions that were ever set.
   first time one is shown.
 
 ### Fixed
+- **SI TDR of a series-terminated line read as out of band, with no reason given**. Looking
+  in from the driver, the TDR reads the line's impedance plus any series resistor (a
+  source termination), above the target band. The TDR plot and the report now say so:
+  which resistor, its value and from what time.
+- **SI statistical eye mostly empty for slow interfaces** (a 100 Mb/s clock, USB 2.0).
+  The eye had 128 phases a UI whatever the edge, so a 0.5 ns edge in a 10 ns UI got
+  about 4 and drew as scattered dots; it now has at least 20 across the edge (and the
+  pulse 8 samples), slow interfaces only. The half UI before the pulse's record was left
+  blank; it is drawn. CMOS jitter is now 5 ps rms random and 50 ps deterministic, not
+  0.01 and 0.05 UI (100 and 500 ps at 100 Mb/s, more than the edge).
+- **Check boxes hard to see in dark mode, Solve easy to miss**. Fusion outlines check
+  boxes and radio buttons in a shade of the window colour, next to invisible when dark;
+  in dark mode they now have a light outline. Each mode's Solve button is green (grey
+  while it cannot be pressed).
+- **Mode switch easy to miss, and PI buttons in SI**. The mode buttons were small radio
+  buttons at the far right of the toolbar. They now lead the toolbar as segmented buttons,
+  grouped as **Power Integrity** (DC, AC, Noise) and **Signal Integrity** (SI), the
+  chosen mode highlighted. **Import…** and **Auto-fill rail…**, which fill the power
+  tree, no longer show in SI mode.
+- **SI TDR read high where a mismatch starts at the port**. The TDR's Gaussian edge is
+  centred on t = 0, so half of a reflection that starts at once fell before 0 and was
+  lost: an 86 Ω line off a 100 Ω port read about 92 Ω, out of the ±10 % band of a good
+  85 Ω pair. Near-end crosstalk's step had the same fault. Both now count the whole edge.
+- **Setup panel cut off on the right at start-up**. The setup dock sized itself to the
+  widest mode's panel (DC's), even while another mode was shown, so it scrolled sideways
+  and hid the right of the panel (SI's **Scan** button) until the dock was dragged wider.
+  The dock now takes the shown panel's width and widens itself when a panel needs more.
 - **Waveform legend labels cut off** (#197). The tickbox list beside the Waveforms plot
   kept a narrow width and cut its curve names short. It now widens to its longest name, up
   to 360 px, and a name still too long for the room (on a small screen) is shortened with

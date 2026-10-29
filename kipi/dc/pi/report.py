@@ -403,7 +403,7 @@ def load_results(path, progress: ProgressReporter = NULL, legacy: bool = False) 
             raise ValueError("These results are from a newer KiPI")
     kind = payload.get("kind", "dc")                # files before 0.7.1 have no kind
     if kind != "dc":
-        mode = "Coupled Noise" if kind == "noise" else "AC"
+        mode = results_io.mode_name(kind)
         raise ValueError(f"This holds {mode} results: open it in {mode} mode")
     if not payload.get("legacy"):
         from kipi.dc.pi.model import PISetup

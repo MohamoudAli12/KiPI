@@ -35,6 +35,7 @@ from kipi.dc.gui.pi_panel import (
 )
 from kipi.dc.pi.model import PISetup
 from kipi.gui.report_option import ReportOption
+from kipi.gui.theme import SOLVE_BUTTON_STYLE
 from kipi.gui.tooltip_art import art_tip
 from kipi.gui.sortable import make_sortable, reset_sort, set_row
 from kipi.noise.checks import (
@@ -858,7 +859,7 @@ class NoisePanel(QWidget, PartSelection):
         self.cmb_agg.setToolTip("The aggressor to simulate (one at a time)")
         self.cmb_agg.currentIndexChanged.connect(self._agg_changed)
         self.btn_solve = QPushButton("Solve", self)
-        self.btn_solve.setStyleSheet("font-weight: bold; padding: 6px;")
+        self.btn_solve.setStyleSheet(SOLVE_BUTTON_STYLE)
         self.btn_solve.setToolTip("Save the setup, then build the aggressor's waveforms from "
                                   "its parameters and the board's hot loop. Problems that "
                                   "stop the solve are listed above in red.")

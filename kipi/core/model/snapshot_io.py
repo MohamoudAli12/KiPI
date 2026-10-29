@@ -91,7 +91,10 @@ def from_dict(d: Dict[str, Any]) -> BoardSnapshot:
                               position=tuple(f["position"]), side=f["side"],
                               pad_ids=list(f["pad_ids"]), footprint=f.get("footprint", ""),
                               angle_deg=f.get("angle_deg"),
-                              fields=dict(f.get("fields") or {}))
+                              fields=dict(f.get("fields") or {}),
+                              dnp=bool(f.get("dnp", False)),
+                              variant_dnp={str(k): bool(v) for k, v in
+                                           (f.get("variant_dnp") or {}).items()})
                     for f in d["footprints"]],
         zones=[Zone(id=z["id"], net=z["net"], name=z["name"], priority=z["priority"],
                     filled=_layer_polys(z["filled"])) for z in d["zones"]],
@@ -105,6 +108,7 @@ def from_dict(d: Dict[str, Any]) -> BoardSnapshot:
         # Snapshots from before #82 say nothing of the silkscreens.
         silkscreen={side: [_poly(p) for p in polys]
                     for side, polys in d.get("silkscreen", {}).items()},
+        variants=dict(d.get("variants") or {}),
     )
 
 

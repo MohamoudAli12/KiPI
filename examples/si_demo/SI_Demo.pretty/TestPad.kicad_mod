@@ -1,0 +1,12 @@
+(footprint "TestPad"
+	(version 20241229)
+	(generator "kipi_si_demo")
+	(layer "F.Cu")
+	(descr "SMD test pad, 1 mm")
+	(property "Reference" "REF**" (at 0 -1.6 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
+	(property "Value" "TestPad" (at 0 1.6 0) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
+	(attr smd)
+	(fp_rect (start -0.6 -0.6) (end 0.6 0.6) (stroke (width 0.1) (type solid)) (fill no) (layer "F.Fab") (uuid "57a788d0-9ea5-5256-be03-a8e1bd49cef7"))
+	(fp_rect (start -0.85 -0.85) (end 0.85 0.85) (stroke (width 0.05) (type solid)) (fill no) (layer "F.CrtYd") (uuid "09ee8373-f967-5e47-a88f-b959e70f4d8a"))
+	(pad "1" smd circle (at 0 0) (size 1 1) (layers "F.Cu" "F.Mask" "F.Paste") (uuid "0785a1f2-4b97-5155-98bf-c78742c29eee"))
+)

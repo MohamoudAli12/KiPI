@@ -31,7 +31,15 @@ from kipi import compat
 MANIFEST = "results.json"
 _GZIP_MAGIC = b"\x1f\x8b"
 # Only classes from these packages are rebuilt.
-_PACKAGES = ("kipi.core.", "kipi.dc.", "kipi.ac.", "kipi.noise.")
+_PACKAGES = ("kipi.core.", "kipi.dc.", "kipi.ac.", "kipi.noise.", "kipi.si.")
+
+
+# The analysis mode each results kind opens in, for "open it in … mode".
+MODE_NAMES = {"dc": "DC", "ac": "AC", "noise": "Coupled Noise", "si": "Signal Integrity"}
+
+
+def mode_name(kind) -> str:
+    return MODE_NAMES.get(kind or "dc", "DC")
 
 
 class LegacyResults(ValueError):

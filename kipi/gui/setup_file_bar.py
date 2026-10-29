@@ -1,11 +1,12 @@
 # Copyright (c) 2026 Tomachie LLC.
-"""The setup file's bar above the DC and AC pages: which setup is open, Import and Save.
-DC and AC share one setup file, so the bar is the same in both modes."""
+"""The setup file's bar above the setup pages: which setup is open, Import, Auto-fill
+rail and Save. Every mode shares one setup file, so Save is in each; Import and Auto-fill
+fill the power tree, so only the Power Integrity modes (DC, AC, Noise) show them."""
 
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
-SAVE_TIP = "Save the setup next to the board (DC and AC share one file)"
+SAVE_TIP = "Save the setup next to the board (every analysis shares one file)"
 UNSAVED_STYLE = "QPushButton { border: 2px solid #ff8c00; border-radius: 3px; padding: 4px 12px; }"
 
 
@@ -45,6 +46,12 @@ class SetupFileBar(QWidget):
         row.addWidget(self.btn_import)
         row.addWidget(self.btn_autofill)
         row.addWidget(self.btn_save)
+
+    def set_mode(self, mode: str):
+        """Show the power-tree buttons in the Power Integrity modes only (not SI)."""
+        pi = mode != "si"
+        self.btn_import.setVisible(pi)
+        self.btn_autofill.setVisible(pi)
 
     def set_label(self, text: str):
         self.lbl_file.setText(text)

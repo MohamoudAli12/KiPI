@@ -28,6 +28,7 @@ def _view(field):
     v._style_bar = lambda title: Viewer3D._style_bar(v, title)
     v._apply_result_opacity = lambda actor: Viewer3D._apply_result_opacity(v, actor)
     v._set_depth_peeling = lambda on: Viewer3D._set_depth_peeling(v, on)
+    v._dimming = lambda: False               # no nets picked out
     return v, scene
 
 
