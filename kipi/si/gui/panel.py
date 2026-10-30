@@ -431,6 +431,7 @@ class ChannelEditor(_Editor):
                 from kipi.si.solver import ends
                 probe = Channel(ch.name, ch.net, ch.partner, not_fitted=skip)
                 probe.driver_ref, probe.receiver_ref = ch.driver_ref, ch.receiver_ref
+                probe.follow_series = ch.follow_series
                 guess = ends(snap, probe, nets)       # what a blank end resolves to
             except Exception:  # noqa: BLE001 (a net with no parts: nothing to offer)
                 pass

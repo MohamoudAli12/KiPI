@@ -134,14 +134,79 @@ def _series_refs(snap, nets) -> set:
     return {r for r, *_ in series_parts(snap, nets)}
 
 
+def _short(net: str) -> str:
+    return net.rsplit("/", 1)[-1]
+
+
+def _auto_name(net: str) -> bool:
+    """KiCad's own name for a net nobody named (after an AC-coupling capacitor, say)."""
+    return _short(net).startswith(("Net-(", "unconnected-("))
+
+
+def _named_pair(a: str, b: str) -> bool:
+    from kipi.si.pairs import _partner
+    return any((p := _partner(x)) is not None and p[0] == y for x, y in ((a, b), (b, a)))
+
+
+def check_pair_legs(ch: Channel, groups: Sequence[Sequence[str]]):
+    """A pair whose legs go on through series parts to two nets that are not a pair
+    (DP AUX+ and AUX- on to an HDMI port's DDC SCL and SDA) is no differential pair
+    beyond them: refuse it, rather than solve SCL and SDA as one."""
+    if not ch.partner or not _named_pair(ch.net, ch.partner):
+        return                       # a pair named some other way: nothing to go by
+    for g in groups[1:]:
+        if len(g) == 2 and not any(map(_auto_name, g)) and not _named_pair(*g):
+            raise SIError(
+                f"{_short(ch.net)} and {_short(ch.partner)} are not a pair beyond their "
+                f"series parts: they go on to {_short(g[0])} and {_short(g[1])}. Untick "
+                "Through series parts to solve the pair up to them, or make each a "
+                "single-ended channel")
+
+
+def _leg_parts(snap: BoardSnapshot, ch: Channel, nets: Sequence[str], skip) -> Tuple[set, set]:
+    """The parts (not ``skip``) with a pad on the pair's positive leg's nets, and on its
+    negative leg's."""
+    pos, neg = leg_nets(snap, ch)
+    on = []
+    for leg in (pos, neg):
+        on.append({p.footprint for n in leg if n in nets for p in snap.items_on_net(n)[2]
+                   if p.footprint and p.footprint not in skip})
+    return on[0], on[1]
+
+
+def _one_leg_error(ch: Channel, pos_parts: set, neg_parts: set, both: set) -> SIError:
+    lone = [f"{r} is on {_short(ch.net)} only" for r in sorted(pos_parts - neg_parts)] + \
+        [f"{r} on {_short(ch.partner)} only" for r in sorted(neg_parts - pos_parts)]
+    have = (f"only {', '.join(sorted(both))} has pads on both" if both
+            else "no part has pads on both")
+    return SIError(
+        f"{_short(ch.net)} and {_short(ch.partner)}: {have}"
+        + (f" ({'; '.join(lone[:4])})" if lone else "")
+        + ". A pair needs a part on both legs at each end: set the Transmitter and Receiver, "
+          "or, if the two are not a pair here, make each a single-ended channel")
+
+
 def ends(snap: BoardSnapshot, ch: Channel, nets: Sequence[str]) -> Tuple[str, str]:
     """The driving and receiving parts' references: as set, else the two parts on the
-    channel's first net and its nets farthest apart (an IC driving when only one is)."""
+    channel's first net and its nets farthest apart (an IC driving when only one is).
+    A pair's ends are parts with pads on both its legs."""
     skip = _series_refs(snap, nets) | set(ch.not_fitted)
     pads = [p for n in nets for p in snap.items_on_net(n)[2] if p.footprint and p.footprint not in skip]
     if not pads:
         raise SIError(f"{ch.net} has no pads")
     drv, rcv = ch.driver_ref, ch.receiver_ref
+    if ch.partner:
+        pos_parts, neg_parts = _leg_parts(snap, ch, nets, skip)
+        both = pos_parts & neg_parts
+        for ref in (drv, rcv):
+            if ref and ref not in both and ref in pos_parts | neg_parts:
+                leg = ch.net if ref in pos_parts else ch.partner
+                other = ch.partner if ref in pos_parts else ch.net
+                raise SIError(f"{ref} is on {_short(leg)} only, not on {_short(other)}: a "
+                              "pair's Transmitter and Receiver need a pad on both legs")
+        pads = [p for p in pads if p.footprint in both or p.footprint in (drv, rcv)]
+        if len({p.footprint for p in pads} | {r for r in (drv, rcv) if r}) < 2:
+            raise _one_leg_error(ch, pos_parts, neg_parts, both)
     if drv and rcv:
         return drv, rcv
     if drv or rcv:
@@ -238,6 +303,7 @@ def solve_channel(snap: BoardSnapshot, setup, name: str, progress: ProgressRepor
         board = board or SIBoard(snap, getattr(setup.ac, "loss_tangent", None), s.etch_mm,
                                  progress.check_cancel)
     groups = chains(snap, ch)
+    check_pair_legs(ch, groups)
     pairs = [(g[0], g[1]) for g in groups if len(g) == 2] if ch.partner else []
     for a in ch.aggressors:
         if a in snap.net_names() and a not in nets:

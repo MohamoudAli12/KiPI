@@ -201,6 +201,13 @@ milestones rather than versions that were ever set.
   path is now read; one that is gone (settings brought from KiCad 9 or another machine)
   is looked for by file name, then display name, in this version's 3rd-party themes
   (`KICAD10_3RD_PARTY` when set). The log names the theme by its display name.
+- **SI pair "has no pad on" its other leg.** A pair's ends were guessed from every part
+  on its nets, so a part on one leg only could be one, as with DP AUX+ and AUX−
+  going on through their own 0 Ω resistors to an HDMI port's DDC SCL and SDA. A pair's
+  ends are now parts on both legs; a Transmitter or Receiver set on one leg only, or a
+  pair with fewer than two such parts, is refused with the parts on each leg named. A
+  pair whose legs go on through series parts to two nets that are not a pair (by name)
+  is refused too, rather than solved as one.
 - **SI TDR of a series-terminated line read as out of band, with no reason given**. Looking
   in from the driver, the TDR reads the line's impedance plus any series resistor (a
   source termination), above the target band. The TDR plot and the report now say so:

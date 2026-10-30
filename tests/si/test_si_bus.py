@@ -119,3 +119,72 @@ def test_one_end_set_guesses_the_other():
     assert ends(snap, ch, nets) == ("U2", "U1")         # not U1 driving itself
     ch.receiver_ref, ch.driver_ref = "", "U2"
     assert ends(snap, ch, nets) == ("U2", "U1")
+
+
+def aux_to_ddc() -> BoardSnapshot:
+    """A DP mux's AUX pair (U36) going on, each leg through its own 0 Ω, to an HDMI
+    port's DDC SCL and SDA (J1); beside it a real pair, U1 to J2, through AC-coupling
+    capacitors to nets KiCad named, P and N swapped on the way."""
+    F, pads, tracks = example.F, [], []
+
+    def pad(net, ref, num, x, y):
+        pads.append(example._pad(f"{ref}.{num}", net, ref, num, x, y))
+
+    def run(net, a, b, y):
+        tracks.append(Track(net, F, 0.1, (a, y), (b, y)))
+
+    pad("AUX_A+", "U36", "40", 2, 2), pad("AUX_A-", "U36", "39", 2, 3)
+    pad("AUX_A+", "R277", "1", 20, 2), pad("SCL", "R277", "2", 21, 2)
+    pad("AUX_A-", "R278", "1", 20, 3), pad("SDA", "R278", "2", 21, 3)
+    pad("SCL", "J1", "15", 40, 2), pad("SDA", "J1", "16", 40, 3)
+    run("AUX_A+", 2, 20, 2), run("AUX_A-", 2, 20, 3), run("SCL", 21, 40, 2)
+    run("SDA", 21, 40, 3)
+    pad("TX_P", "U1", "1", 2, 10), pad("TX_N", "U1", "2", 2, 11)
+    pad("TX_P", "C1", "1", 20, 10), pad("Net-(C1-Pad2)", "C1", "2", 21, 10)
+    pad("TX_N", "C2", "1", 20, 11), pad("Net-(C2-Pad2)", "C2", "2", 21, 11)
+    pad("Net-(C1-Pad2)", "J2", "1", 40, 10), pad("Net-(C2-Pad2)", "J2", "2", 40, 11)
+    run("TX_P", 2, 20, 10), run("TX_N", 2, 20, 11)
+    run("Net-(C1-Pad2)", 21, 40, 10), run("Net-(C2-Pad2)", 21, 40, 11)
+    fps = [Footprint(r, r, v, (0, 0), "top") for r, v in (
+        ("U36", "TS3DV642"), ("R277", "0R"), ("R278", "0R"), ("J1", "HDMI"),
+        ("U1", "SOC"), ("C1", "100n"), ("C2", "100n"), ("J2", "CONN"))]
+    names = ["", "GND", "AUX_A+", "AUX_A-", "SCL", "SDA", "TX_P", "TX_N",
+             "Net-(C1-Pad2)", "Net-(C2-Pad2)"]
+    return BoardSnapshot("aux.kicad_pcb", "", example.stackup(),
+                         [Net(i, n) for i, n in enumerate(names)], tracks, [], pads, fps, [],
+                         [example.Poly(example.rect(0, 0, 50, 20))], source="synthetic")
+
+
+def test_pair_ends_need_both_legs():
+    from kipi.si.model import Channel
+    from kipi.si.solver import SIError, ends
+    snap = aux_to_ddc()
+    ch = Channel("AUX", "AUX_A+", "AUX_A-", follow_series=False)
+    nets = ["AUX_A+", "AUX_A-"]
+    # Only U36 is on both legs: no guessing R278 (on AUX_A- alone) as the far end.
+    with pytest.raises(SIError, match=r"only U36 has pads on both.*R277 is on AUX_A\+ only"):
+        ends(snap, ch, nets)
+    ch.receiver_ref = "R278"
+    with pytest.raises(SIError, match="R278 is on AUX_A- only, not on AUX_A+"):
+        ends(snap, ch, nets)
+    # A real pair: the ends are the parts on both legs, through the capacitors.
+    tx = Channel("TX", "TX_P", "TX_N")
+    assert ends(snap, tx, ["TX_P", "TX_N", "Net-(C1-Pad2)", "Net-(C2-Pad2)"]) == ("U1", "J2")
+
+
+def test_pair_that_splits_into_two_nets_is_refused():
+    from kipi.si.model import Channel
+    from kipi.si.solver import SIError, chains, check_pair_legs
+    snap = aux_to_ddc()
+    ch = Channel("AUX", "AUX_A+", "AUX_A-")
+    groups = chains(snap, ch)
+    assert groups == [["AUX_A+", "AUX_A-"], ["SCL", "SDA"]]
+    with pytest.raises(SIError, match="not a pair beyond their series parts.*SCL and SDA"):
+        check_pair_legs(ch, groups)
+    check_pair_legs(ch, chains(snap, Channel("AUX", "AUX_A+", "AUX_A-",
+                                             follow_series=False)))
+    tx = Channel("TX", "TX_P", "TX_N")
+    check_pair_legs(tx, chains(snap, tx))                   # KiCad's names: let through
+    # P and N swapped through the series parts is still a pair.
+    check_pair_legs(tx, [["TX_P", "TX_N"], ["LANE_N", "LANE_P"]])
+
