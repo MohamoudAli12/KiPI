@@ -79,18 +79,65 @@ def settings_dirs(kicad_version: str = "") -> List[Path]:
     return [d for _, d in sorted(found, key=order)]
 
 
+def _third_party_dirs(version: str) -> List[Path]:
+    """The Plugin and Content Manager's folders for KiCad ``version`` ("10.0"), where it
+    installs themes under ``colors/``: ``KICAD<major>_3RD_PARTY`` when set, else the
+    platform's place, the Flatpak's too."""
+    out: List[Path] = []
+    major = version.split(".")[0]
+    env = os.environ.get(f"KICAD{major}_3RD_PARTY")
+    if env:
+        out.append(Path(env))
+    home = Path.home()
+    if sys.platform == "win32":
+        out.append(home / "Documents" / "KiCad" / version / "3rdparty")
+    elif sys.platform == "darwin":
+        out.append(home / "Documents" / "KiCad" / version / "3rdparty")
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME")
+        out.append((Path(xdg) if xdg else home / ".local" / "share") / "kicad" / version
+                   / "3rdparty")
+        out.append(home / ".var" / "app" / "org.kicad.KiCad" / "data" / "kicad" / version
+                   / "3rdparty")
+    return out
+
+
+def _named(files, name: str, stem: str) -> Optional[Path]:
+    """The first of ``files`` named ``stem``.json, else whose display name is ``name``."""
+    files = list(files)
+    for f in files:
+        if f.name.lower() == f"{stem.lower()}.json":
+            return f
+    for f in files:
+        try:
+            if json.loads(f.read_text(encoding="utf-8")).get("meta", {}).get("name") == name:
+                return f
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None
+
+
 def _theme_file(folder: Path, name: str) -> Optional[Path]:
-    colors = folder / "colors"
-    direct = colors / f"{name}.json"
-    if direct.is_file():
-        return direct
+    """The theme's file. KiCad names a theme of its settings folder's ``colors/`` by its
+    file name, and one the Plugin and Content Manager installed by its path (under
+    ``3rdparty/colors``). A path that is gone (settings brought from another KiCad version
+    or machine) is looked for by its file name, then by display name, in the settings'
+    ``colors/`` and the version's 3rd-party themes."""
+    is_path = name.lower().endswith(".json") or "/" in name or "\\" in name
+    if is_path:
+        path = Path(name).expanduser()
+        if path.is_file():
+            return path
+    stem = re.split(r"[\\/]", name)[-1]
+    stem = stem[:-5] if stem.lower().endswith(".json") else stem
     try:
-        for f in sorted(colors.glob("*.json")):
-            try:
-                if json.loads(f.read_text(encoding="utf-8")).get("meta", {}).get("name") == name:
-                    return f
-            except (OSError, ValueError, AttributeError):
-                continue
+        found = _named(sorted((folder / "colors").glob("*.json")), name, stem)
+        if found is not None:
+            return found
+        for root in _third_party_dirs(folder.name):
+            found = _named(sorted((root / "colors").glob("*/*.json")), name, stem)
+            if found is not None:
+                return found
     except OSError:
         pass
     return None
@@ -119,7 +166,8 @@ def copper_theme(kicad_version: str = "") -> Tuple[Dict[str, RGB], str]:
                 rgb = parse_color(text)
                 if rgb is not None and key in colors:
                     colors[key] = rgb
-            return colors, f"KiCad theme {name!r}"
+            shown = (theme.get("meta") or {}).get("name") or name
+            return colors, f"KiCad theme {shown!r}"
     except Exception:  # noqa: BLE001 - colors must never stop a board loading
         log.warning("Could not read KiCad's color theme", exc_info=True)
         return dict(DEFAULT_COPPER), "KiCad default theme (theme unreadable)"

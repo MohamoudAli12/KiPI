@@ -195,6 +195,12 @@ milestones rather than versions that were ever set.
   first time one is shown.
 
 ### Fixed
+- **A color theme from KiCad's Plugin and Content Manager was not used** ("theme …
+  not found", KiCad's default colors instead). KiCad names such a theme by its file's
+  path, under `3rdparty/colors`, not by a name in its settings' `colors/` folder. That
+  path is now read; one that is gone (settings brought from KiCad 9 or another machine)
+  is looked for by file name, then display name, in this version's 3rd-party themes
+  (`KICAD10_3RD_PARTY` when set). The log names the theme by its display name.
 - **SI TDR of a series-terminated line read as out of band, with no reason given**. Looking
   in from the driver, the TDR reads the line's impedance plus any series resistor (a
   source termination), above the target band. The TDR plot and the report now say so:

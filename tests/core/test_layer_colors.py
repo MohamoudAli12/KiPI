@@ -11,8 +11,10 @@ from kipi.core.viz import layer_colors
 
 @pytest.fixture
 def kicad_home(tmp_path, monkeypatch):
-    """A KiCad settings folder with one folder per version, and nothing else to find."""
+    """A KiCad settings folder with one folder per version, and nothing else to find:
+    3rd-party themes only under ``tmp_path / "third"``, never this machine's."""
     monkeypatch.setattr(colors, "_config_roots", lambda: [tmp_path])
+    monkeypatch.setattr(colors, "_third_party_dirs", lambda version: [tmp_path / "third"])
 
     def version(name, theme=None, files=None):
         folder = tmp_path / name
@@ -66,6 +68,36 @@ def test_the_editors_theme_is_used(kicad_home):
 def test_a_theme_is_found_by_its_display_name(kicad_home):
     kicad_home("10.0", "Pretty", {"pretty_v2.json": _theme("Pretty", {"f": "rgb(9, 9, 9)"})})
     assert colors.copper_theme()[0]["f"] == (9, 9, 9)
+
+
+def test_a_theme_installed_from_the_content_manager_is_found_by_its_path(
+        kicad_home, tmp_path):
+    # KiCad names such a theme by its file, under 3rdparty/colors, not by a name.
+    f = tmp_path / "3rdparty" / "colors" / "com_example_mono" / "mono.json"
+    f.parent.mkdir(parents=True)
+    f.write_text(_theme("Mono High Contrast", {"f": "rgb(245, 127, 0)"}))
+    kicad_home("10.0", str(f), {})
+    found, source = colors.copper_theme("10.0")
+    assert found["f"] == (245, 127, 0)
+    assert source == "KiCad theme 'Mono High Contrast'"
+
+
+def test_a_content_manager_theme_whose_path_is_gone_is_found_again(kicad_home, tmp_path):
+    # Settings brought over from KiCad 9 still point into 9.0/3rdparty; the theme now
+    # lives under this version's 3rd-party folder.
+    f = tmp_path / "third" / "colors" / "com_example_mono" / "mono.json"
+    f.parent.mkdir(parents=True)
+    f.write_text(_theme("Mono", {"f": "rgb(1, 1, 1)"}))
+    folder = kicad_home("10.0", "/old/kicad/9.0/3rdparty/colors/com_example_mono/mono.json")
+    assert colors.copper_theme("10.0")[0]["f"] == (1, 1, 1)
+    # By display name too: a 3rd-party theme KiCad names that way.
+    (folder / "pcbnew.json").write_text(json.dumps({"appearance": {"color_theme": "Mono"}}))
+    assert colors.copper_theme("10.0")[0]["f"] == (1, 1, 1)
+
+
+def test_the_3rd_party_folder_follows_kicads_variable(monkeypatch, tmp_path):
+    monkeypatch.setenv("KICAD10_3RD_PARTY", str(tmp_path))
+    assert colors._third_party_dirs("10.0")[0] == tmp_path
 
 
 def test_the_running_versions_settings_win(kicad_home):
