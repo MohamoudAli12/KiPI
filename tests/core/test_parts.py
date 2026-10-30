@@ -3,7 +3,9 @@
 import pytest
 
 from kipi.core.model.board import Footprint
-from kipi.core.model.parts import parse_resistance, resistor_ohms
+from kipi.core.model.parts import (
+    parse_capacitance, parse_resistance, part_value, resistor_ohms, value_fields,
+)
 from synthetic import make_board
 
 
@@ -32,3 +34,36 @@ def test_only_resistor_refs_are_read():
     assert resistor_ohms(snap, "RN1") is None
     assert resistor_ohms(snap, "R99") is None
     assert resistor_ohms(None, "R7") is None
+
+
+def test_a_val_field_stands_in_for_an_unreadable_value():
+    # A project keeping the library name in Value and the value itself in "Val".
+    snap = make_board()
+    snap.footprints += [Footprint("f6", "R8", "R_33R_0402", (0, 0), "top", fields={"Val": "33R"}),
+                        Footprint("f7", "R9", "10m", (0, 0), "top", fields={"Val": "1k"}),
+                        Footprint("f8", "R10", "R_0402", (0, 0), "top", fields={"MPN": "RC0402"})]
+    assert resistor_ohms(snap, "R8") == pytest.approx(33)
+    assert resistor_ohms(snap, "R9") == pytest.approx(0.01)     # Value first
+    assert resistor_ohms(snap, "R10") is None
+
+
+def test_part_value_picks_the_field_its_parser_reads():
+    fp = Footprint("f", "C1", "C_220n_0402", (0, 0), "top", fields={"VAL": "220n"})
+    assert part_value(fp, parse_capacitance) == "220n"
+    assert value_fields(fp) == ["220n"]
+    fp = Footprint("f", "C2", "C_0402", (0, 0), "top", fields={"Val": "DNP"})
+    assert part_value(fp, parse_capacitance) == "C_0402"
+
+
+def test_pdn_capacitors_take_their_value_from_a_val_field():
+    from kipi.ac.checks import capacitor_candidates
+    from kipi.core.model.board import Pad
+    snap = make_board()
+    snap.pads += [Pad(id="c1", net="+3V3", footprint="C110", number="1", position=(5, 0),
+                      pad_type="smd"),
+                  Pad(id="c2", net="GND", footprint="C110", number="2", position=(5, 1),
+                      pad_type="smd")]
+    snap.footprints.append(Footprint("f9", "C110", "C_220n_0402", (5, 0), "top",
+                                     pad_ids=["c1", "c2"], fields={"Val": "220n"}))
+    (c,) = capacitor_candidates(snap, ["+3V3", "GND"])
+    assert (c.ref, c.value) == ("C110", "220n")

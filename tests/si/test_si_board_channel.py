@@ -11,7 +11,8 @@ from kipi.si import closed_form as cf
 from kipi.si import sparams
 from kipi.si.board import SIBoard
 from kipi.si.extract import (
-    BuildOptions, build_channel, follow_series, parse_value, series_parts, via_stack,
+    BuildOptions, build_channel, follow_series, parse_value, part_value, series_parts,
+    via_stack,
 )
 from kipi.si.pairs import diff_target, find_pairs
 from kipi.si.scan import FAIL, PASS, WARN, ScanSettings, scan
@@ -61,6 +62,15 @@ def test_values():
     assert parse_value("33") == 33
     assert parse_value("10uF") == pytest.approx(1e-5)
     assert parse_value("DNP") is None
+
+
+def test_part_value_falls_back_to_a_val_field():
+    # A project keeping the library name in Value and the value itself in "Val".
+    from types import SimpleNamespace as NS
+    assert part_value(NS(value="C_220n_0402", fields={"Val": "220n"})) == "220n"
+    assert part_value(NS(value="100n", fields={"Val": "1u"})) == "100n"
+    assert part_value(NS(value="C_220n_0402", fields={"VALUE": "220nF"})) == "220nF"
+    assert part_value(NS(value="C_220n_0402", fields={"MPN": "GRM155"})) == "C_220n_0402"
 
 
 def test_series_parts(board):

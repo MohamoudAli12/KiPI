@@ -7,6 +7,16 @@ milestones rather than versions that were ever set.
 ## 0.9.3 (in development)
 
 ### Added
+- **One SI report of several channels.** **Report several…** beside **Report** lists the
+  solved channels, each ticked. The report of the ticked ones (HTML or PDF) opens with a
+  summary of them all. In HTML, a picker at the top shows one channel or all of them,
+  with ◀ ▶ to step through. A PDF has them one after another, with each channel's
+  Touchstone file attached.
+- **Part values from a Val field.** Some projects put a library name in Value
+  (`C_220n_0402`) and the value in a field named `Val`. Where Value cannot be read as
+  the value, a `Val` (or `VALUE`) field is used instead: for SI series parts and
+  decoupling capacitors, PI links and the PDN's capacitors, Coupled Noise inductors and
+  capacitors, and as one more name to find a part's SPICE model by.
 - **Solve several SI channels at once**. Tick channels in the Channels list (or Tick
   all) and Solve becomes **Solve N ticked**: they are solved one after another on the
   board indexed once, each result shown as it finishes and each row marked PASS, WARN,

@@ -47,7 +47,7 @@ import numpy as np
 from kipi.ac.model import caps_dict
 from kipi.ac.solver.physics import EPS0_F_PER_MM, skin_depth_mm
 from kipi.core.model.board import BoardSnapshot, Pad
-from kipi.core.model.parts import parse_capacitance
+from kipi.core.model.parts import parse_capacitance, part_value
 from kipi.core.model.stackup import combined_epsilon_r
 from kipi.core.progress import NULL, ProgressReporter
 from kipi.dc.pi.model import PinRef, PISetup
@@ -142,7 +142,7 @@ class _Board:
             if p.footprint:
                 self.by_ref.setdefault(p.footprint, []).append(p)
         self.side = {f.reference: f.side for f in snap.footprints}
-        self.value = {f.reference: f.value for f in snap.footprints}
+        self.value = {f.reference: part_value(f, parse_capacitance) for f in snap.footprints}
         self._copper: Dict[Tuple[str, int], object] = {}
         self._planes: Dict[Tuple[int, str], object] = {}
         self.order = [c.id for c in self.stack.copper]

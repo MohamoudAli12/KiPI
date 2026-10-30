@@ -56,7 +56,9 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from kipi.core.model.board import BoardSnapshot, Footprint
 from kipi.core.model.nets import voltage_from_name
-from kipi.core.model.parts import is_capacitor_ref, is_inductor_ref, parse_resistance
+from kipi.core.model.parts import (
+    is_capacitor_ref, is_inductor_ref, parse_resistance, part_value,
+)
 from kipi.dc.pi.autofill import guess_ground_pins, looks_like_ground, part_nets, pins_on
 from kipi.dc.pi.load_model import (
     LoadModel, ModelError, SupplyModel, _supply, apply_to_load, best_supply,
@@ -384,7 +386,7 @@ class _Walker:
         if r is None and e and e.link:
             r = e.link.resistance_ohm
         if r is None and ref[:1] == "R":
-            r = parse_resistance(self._fp(ref).value)
+            r = parse_resistance(part_value(self._fp(ref), parse_resistance))
         return r
 
     def try_link(self, ref: str, net: str, nets: Dict[str, List[str]],

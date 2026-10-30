@@ -28,7 +28,9 @@ from kipi.ac.gui.caps import describe_cap, models_from_values, new_cap
 from kipi.ac.gui.panel import CapEditor
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import classify_nets, sorted_nets
-from kipi.core.model.parts import is_capacitor_ref, is_inductor_ref, parse_inductance
+from kipi.core.model.parts import (
+    is_capacitor_ref, is_inductor_ref, parse_capacitance, parse_inductance, part_value,
+)
 from kipi.dc.gui.pi_panel import (
     NONE, ItemList, PartSelection, _Editor, _get_optional, _optional_spin, _set_optional,
     _spin, _unique, make_searchable, tip,
@@ -323,7 +325,7 @@ class AggressorEditor(_Editor):
         if snap is None or not net:
             return []
         _, _, pads, _ = snap.items_on_net(net)
-        values = {f.reference: f.value for f in snap.footprints}
+        values = {f.reference: part_value(f, parse_capacitance) for f in snap.footprints}
         refs = sorted({p.footprint for p in pads if is_capacitor_ref(p.footprint)},
                       key=_natural)
         return [(r, values.get(r, "")) for r in refs]
@@ -554,8 +556,8 @@ class AggressorEditor(_Editor):
         ref = self.inductor.currentData() or ""
         snap = self.panel.snapshot
         if ref and snap is not None and not self.inductance.value():
-            value = next((f.value for f in snap.footprints if f.reference == ref), "")
-            h = parse_inductance(value)
+            fp = next((f for f in snap.footprints if f.reference == ref), None)
+            h = parse_inductance(part_value(fp, parse_inductance)) if fp else None
             if h:
                 self.inductance.blockSignals(True)
                 self.inductance.setValue(h * 1e9)

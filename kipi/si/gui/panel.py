@@ -615,6 +615,7 @@ class SIPanel(QWidget):
     setup_changed = Signal()
     results_saved = Signal(str)
     report_requested = Signal(object, str)         # the shown ChannelResult, "html"/"pdf"
+    reports_requested = Signal(object, str)        # ChannelResults for one report, format
     EM_TIP = ("Simulate the region around the via in openEMS (minutes) and compare its "
               "S-parameters with KiPI's")
     touchstone_requested = Signal(object)          # the shown ChannelResult
@@ -759,6 +760,11 @@ class SIPanel(QWidget):
         self.btn_report.setVisible(False)
         self.btn_report.clicked.connect(self._open_report)
         row.addWidget(self.btn_report)
+        self.btn_reports = QPushButton("Report several…")
+        self.btn_reports.setToolTip("One report of the solved channels you tick, with a "
+                                    "picker at its top to show one channel or all")
+        self.btn_reports.clicked.connect(self._report_several)
+        row.addWidget(self.btn_reports)
         row.addStretch(1)
         v.addLayout(row)
         row = QHBoxLayout()
@@ -1240,6 +1246,7 @@ class SIPanel(QWidget):
     def _show_buttons(self):
         have = self.result is not None
         self.report_option.set_available(have)
+        self.btn_reports.setEnabled(len(self._results) >= 2)
         self.btn_touchstone.setEnabled(have)
         self.btn_spice.setEnabled(have)
         self.btn_save.setEnabled(bool(self._results) or self.scan_result is not None)
@@ -1338,6 +1345,17 @@ class SIPanel(QWidget):
     def _report(self, fmt: str):
         if self.result is not None:
             self.report_requested.emit(self.result, fmt)
+
+    def solved_results(self) -> List[object]:
+        """The solved channels' results, in the setup's order of the channels."""
+        return [self._results[c.name] for c in self.setup.si_channels
+                if c.name in self._results]
+
+    def _report_several(self):
+        from kipi.si.gui.report_dialog import ReportChannelsDialog
+        dlg = ReportChannelsDialog(self.solved_results(), self)
+        if dlg.exec() == ReportChannelsDialog.Accepted and dlg.chosen():
+            self.reports_requested.emit(dlg.chosen(), self.report_option.fmt())
 
     def _open_report(self):
         path = getattr(self.result, "report_path", "")

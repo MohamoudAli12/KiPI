@@ -67,8 +67,15 @@ def part_values(snap, refs: Iterable[str]) -> List[str]:
     by."""
     if snap is None:
         return []
-    by_ref = {f.reference: f.value for f in snap.footprints}
-    return [by_ref[r] for r in refs if by_ref.get(r)]
+    from kipi.core.model.parts import value_fields
+    by_ref = {f.reference: f for f in snap.footprints}
+    out = []
+    for r in refs:
+        fp = by_ref.get(r)
+        for v in ([fp.value, *value_fields(fp)] if fp else []):
+            if v and v not in out:
+                out.append(v)
+    return out
 
 
 def describe(values: Values) -> str:

@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from kipi.core.model.board import BoardSnapshot
-from kipi.core.model.parts import is_capacitor_ref, is_inductor_ref, parse_inductance
+from kipi.core.model.parts import (
+    is_capacitor_ref, is_inductor_ref, parse_inductance, part_value,
+)
 from kipi.dc.pi.model import (
     PinRef, PISetup, Vrm, _supplied_current, net_groups, rail_nominal, vin_range,
 )
@@ -208,7 +210,7 @@ def seed_phases(snap: BoardSnapshot, setup: PISetup, vrm: Vrm, topo: str
       whose device is nearest.
     """
     by_ref = _pads_by_ref(snap)
-    values = {f.reference: f.value for f in snap.footprints}
+    values = {f.reference: part_value(f, parse_inductance) for f in snap.footprints}
     phases = []
     vin_net = vrm.input.net if vrm.input else ""
     vout_net = vrm.output.net

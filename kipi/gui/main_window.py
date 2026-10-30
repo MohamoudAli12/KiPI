@@ -407,6 +407,7 @@ class MainWindow(QMainWindow):
         si.scan_requested.connect(self.run_si_scan)
         si.em_requested.connect(self.run_si_em)
         si.report_requested.connect(self._si_report)
+        si.reports_requested.connect(self._si_reports)
         si.touchstone_requested.connect(self._si_touchstone)
         si.spice_requested.connect(self._si_spice)
         si.result_selected.connect(self._show_si_result)
@@ -2519,6 +2520,27 @@ class MainWindow(QMainWindow):
                            self._report_path(report_name(self._results_stem(),
                                                          result.channel.name, fmt=fmt)),
                            lambda path: self.si_panel.set_report(result, str(path)))
+
+    def _si_reports(self, results, fmt: str):
+        """One report of several solved channels."""
+        snap = self.snapshot
+        if not results or snap is None:
+            return
+        from kipi.si.html_report import multi_report_name, report_name, write_si_reports
+        setup = self._report_setup(results[0], self.si_panel)
+        scan = self.si_panel.scan_result
+        name = (report_name(self._results_stem(), results[0].channel.name, fmt=fmt)
+                if len(results) == 1 else
+                multi_report_name(self._results_stem(), len(results), fmt=fmt))
+
+        def written(path):
+            for r in results:
+                self.si_panel.set_report(r, str(path))
+
+        self._write_report("Signal Integrity",
+                           lambda p, progress: write_si_reports(p, results, snap, setup, scan,
+                                                                progress),
+                           self._report_path(name), written)
 
     def _si_touchstone(self, result):
         if result is None:

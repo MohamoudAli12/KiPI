@@ -33,6 +33,7 @@ from typing import Callable, Dict, Hashable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from kipi.core.model import parts
 from kipi.core.model.board import BoardSnapshot, Pad, Via
 from kipi.si.board import SIBoard, normal_of
 from kipi.si.cavity import plane_pair_z, shorted
@@ -492,6 +493,12 @@ def parse_value(text: str) -> Optional[float]:
     return v * _SCALE.get(unit, 1.0)
 
 
+def part_value(fp) -> str:
+    """A footprint's value text: its Value, or a Val field when only that reads as a
+    number."""
+    return parts.part_value(fp, parse_value)
+
+
 def series_parts(snap: BoardSnapshot, nets: Sequence[str],
                  not_fitted: Sequence[str] = ()) -> List[Tuple[str, str, str, str]]:
     """Two-pin R, C, L or ferrite parts joining two different nets of ``nets``:
@@ -521,7 +528,7 @@ def series_parts(snap: BoardSnapshot, nets: Sequence[str],
         else:
             continue
         a, b = sorted(nets_here)
-        out.append((fp.reference, k, fp.value, f"{a}|{b}"))
+        out.append((fp.reference, k, part_value(fp), f"{a}|{b}"))
     return out
 
 
@@ -623,7 +630,8 @@ def build_channel(board: SIBoard, groups: Sequence[Sequence[str]], opts: BuildOp
         pb = next(p for p in pads if p.net == b)
         v = parse_value(value)
         if v is None:
-            ch.notes.append(f"{ref}: cannot read the value {value!r}; taken as a short")
+            ch.notes.append(f"{ref}: cannot read the value {value!r}, nor a Val field; taken "
+                            "as a short")
             ckt.add_r(("pad", pa.id), ("pad", pb.id), 1e-3, ref)
         elif kind == "R":
             ckt.add_r(("pad", pa.id), ("pad", pb.id), max(v, 1e-3), ref)
@@ -746,7 +754,7 @@ def decaps_between(board: SIBoard, na: str, nb: str, at, not_fitted: Sequence[st
         for p in board.snap.pads:
             if p.footprint and p.net in key:
                 by_fp.setdefault(p.footprint, []).append(p)
-        values = {f.reference: f.value for f in board.snap.footprints}
+        values = {f.reference: part_value(f) for f in board.snap.footprints}
         found = []
         for ref, pads in by_fp.items():
             if not re.match(r"C\d", ref) or len(pads) != 2 or {p.net for p in pads} != set(key):

@@ -102,6 +102,68 @@ def test_the_pdf_report(app, solved, tmp_path):
     assert "Signal Integrity report" in text and "download=" in text
 
 
+def _two_results(result):
+    import copy
+    import dataclasses
+    other = copy.copy(result)
+    other.channel = dataclasses.replace(result.channel, name="USB again")
+    return [result, other]
+
+
+def test_one_report_of_several_channels(app, solved, tmp_path):
+    from kipi.si.html_report import multi_report_name, write_si_reports
+    snap, setup, result, sc = solved
+    results = _two_results(result)
+    html = write_si_reports(tmp_path / "r.html", results, snap, setup, sc)
+    text = html.read_text(encoding="utf-8")
+    assert "2 channels" in text and "id='si-pick'" in text
+    assert "<option value='ch0'>USB_P/USB_N" in text and "<option value='ch1'>USB again" in text
+    assert "id='ch0'" in text and "id='ch1'" in text and "id='ch1-checks'" in text
+    assert text.count("Download the S-parameters") == 2 and text.count("id='scan'") == 1
+    out = write_si_reports(tmp_path / "r.pdf", results, snap, setup, sc)
+    assert out.stat().st_size > 10_000
+    # A single channel gets the usual report.
+    one = write_si_reports(tmp_path / "one.html", results[:1], snap, setup, sc)
+    assert "si-pick" not in one.read_text(encoding="utf-8")
+    assert multi_report_name("b", 3).startswith("b_3_channels_si_report_")
+
+
+def test_the_panel_asks_for_a_report_of_the_ticked_channels(panel, solved, monkeypatch):
+    from qtpy.QtCore import Qt
+    from kipi.si.gui.report_dialog import ReportChannelsDialog
+    _, _, result, _ = solved
+    results = _two_results(result)
+    panel.setup.si_channels = [r.channel for r in results]
+    panel._fill_channels()
+    assert not panel.btn_reports.isEnabled()
+    for r in results:
+        panel.show_result(r)
+    assert panel.btn_reports.isEnabled()
+    assert panel.solved_results() == results
+
+    def pick_second(dlg):
+        dlg.lst.item(0).setCheckState(Qt.Unchecked)
+        return ReportChannelsDialog.Accepted
+    monkeypatch.setattr(ReportChannelsDialog, "exec", pick_second)
+    asked = []
+    panel.reports_requested.connect(lambda rs, fmt: asked.append((rs, fmt)))
+    panel.btn_reports.click()
+    assert asked == [([results[1]], panel.report_option.fmt())]
+
+
+def test_the_channels_dialog_needs_one_ticked(app, solved):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QDialogButtonBox
+    from kipi.si.gui.report_dialog import ReportChannelsDialog
+    results = _two_results(solved[2])
+    dlg = ReportChannelsDialog(results)
+    ok = dlg.buttons.button(QDialogButtonBox.Ok)
+    assert dlg.chosen() == results and ok.isEnabled()
+    dlg._tick_all(Qt.Unchecked)
+    assert dlg.chosen() == [] and not ok.isEnabled()
+    dlg.close()
+
+
 def test_results_round_trip(solved, tmp_path):
     from kipi.si import report
     snap, setup, result, sc = solved

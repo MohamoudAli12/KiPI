@@ -1,6 +1,7 @@
-"""A Signal Integrity channel's report: its checks, the extracted line sections, the
-plots (eye, TDR, S-parameters, waveforms, pulse response), the Quick Scan's nets and the
-channel's S-parameters as a Touchstone file to download (in a PDF, attached)."""
+"""A Signal Integrity channel's report, or several channels' in one with a picker at its
+top: their checks, the extracted line sections, the plots (eye, TDR, S-parameters,
+waveforms, pulse response), the Quick Scan's nets and each channel's S-parameters as a
+Touchstone file to download (in a PDF, attached)."""
 
 from __future__ import annotations
 
@@ -120,25 +121,179 @@ def write_si_report(path, result, snap, setup, scan=None, progress=None) -> Path
     pdf = path.suffix.lower() == ".pdf"
     r = result
     ch = r.channel
-    now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     parts: List[str] = [
         f"<h1>KiPI Signal Integrity report: {_e(ch.name)}</h1>"
-        f"<div class='meta'>{_e(snap.board_name)} · {now} · KiPI {__version__}</div>"]
+        f"<div class='meta'>{_e(snap.board_name)} · {_now()} · KiPI {__version__}</div>"]
     if not pdf:
         parts.append("<nav><a href='#checks'>Checks</a> <a href='#channel'>Channel</a> "
                      "<a href='#plots'>Plots</a> <a href='#sections'>Line sections</a>"
                      + (" <a href='#scan'>Quick Scan</a>" if scan is not None else "")
                      + " <a href='#notes'>Notes</a> <a href='#user-notes'>User notes</a></nav>")
+    body, attachment = _channel_parts(r, snap, pdf)
+    parts += body
+    parts += _scan_parts(scan)
+    parts.append("<h2 id='notes'>Notes</h2>")
+    parts.append(_notes_list(r.notes))
+    parts.append(METHOD_NOTE)
+    parts.append(notes_section(pdf))
+    return finish(path, f"KiPI Signal Integrity report: {ch.name}", parts, CSS, pdf,
+                  [attachment] if attachment else [])
+
+
+def write_si_reports(path, results, snap, setup, scan=None, progress=None) -> Path:
+    """One report of several channels' ``results`` (ChannelResults, in the order given):
+    a web page with a picker at its top to show one channel or all, or a PDF of them one
+    after another when ``path`` ends in .pdf. A single result gives
+    :func:`write_si_report`'s own report."""
+    results = list(results)
+    if len(results) == 1:
+        return write_si_report(path, results[0], snap, setup, scan, progress)
+    if not results:
+        raise ValueError("No solved channels to report")
+    path = Path(path)
+    pdf = path.suffix.lower() == ".pdf"
+    title = f"KiPI Signal Integrity report: {len(results)} channels"
+    parts: List[str] = [
+        f"<h1>{_e(title)}</h1>"
+        f"<div class='meta'>{_e(snap.board_name)} · {_now()} · KiPI {__version__}</div>"]
+    if not pdf:
+        options = "".join(f"<option value='ch{i}'>{_e(r.channel.name)} ({r.status})</option>"
+                          for i, r in enumerate(results))
+        parts.append("<div class='si-pick'><label>Channel: <select id='si-pick'>"
+                     f"<option value='all'>All {len(results)} channels</option>{options}"
+                     "</select></label>"
+                     "<span class='si-step'><button type='button' data-step='-1'>◀</button>"
+                     "<button type='button' data-step='1'>▶</button></span>"
+                     "<a href='#summary'>Summary</a>"
+                     + (" <a href='#scan'>Quick Scan</a>" if scan is not None else "")
+                     + " <a href='#user-notes'>User notes</a></div>")
+    passed = sum(r.status == "PASS" for r in results)
+    parts.append("<h2 id='summary'>Summary</h2>")
+    parts.append(f"<p>{passed} of {len(results)} channels pass.</p>")
+    rows = []
+    for i, r in enumerate(results):
+        name = _e(r.channel.name) if pdf else f"<a href='#ch{i}'>{_e(r.channel.name)}</a>"
+        eye = (f"{r.eye.height_v * 1e3:.1f} mV × {r.eye.width_ui:.2f} UI"
+               if r.eye is not None else "")
+        rows.append([name, _e(r.channel.proto().label), _status(r.status),
+                     f"{sum(c.status == 'PASS' for c in r.checks)} / {len(r.checks)}",
+                     f"{r.channel.value('rate_bps') / 1e9:.4g} Gb/s", f"{r.length_mm:.2f}",
+                     eye])
+    parts.append(_table(["Channel", "Interface", "Result", "Checks passed", "Data rate",
+                         "Length (mm)", "Eye"], rows))
+    attachments = []
+    for i, r in enumerate(results):
+        if progress is not None:
+            progress.info(f"Channel {i + 1} of {len(results)}: {r.channel.name}")
+        pre = f"ch{i}-"
+        parts.append(f"<section class='si-ch' id='ch{i}'>"
+                     f"<h2>{_e(r.channel.name)}</h2>")
+        if not pdf:
+            parts.append(f"<nav><a href='#{pre}checks'>Checks</a> "
+                         f"<a href='#{pre}channel'>Channel</a> <a href='#{pre}plots'>Plots</a> "
+                         f"<a href='#{pre}sections'>Line sections</a> "
+                         f"<a href='#{pre}notes'>Notes</a></nav>")
+        body, attachment = _channel_parts(r, snap, pdf, pre, "h3")
+        parts += body
+        parts.append(f"<h3 id='{pre}notes'>Notes</h3>")
+        parts.append(_notes_list(r.notes))
+        parts.append("</section>")
+        if attachment:
+            attachments.append(attachment)
+    parts += _scan_parts(scan)
+    parts.append(METHOD_NOTE)
+    parts.append(notes_section(pdf))
+    if not pdf:
+        parts.append(f"<style>{PICK_CSS}</style><script type='text/javascript'>{PICK_JS}"
+                     "</script>")
+    return finish(path, title, parts, CSS, pdf, attachments)
+
+
+def multi_report_name(board_stem: str, count: int, when: Optional[_dt.datetime] = None,
+                      fmt: str = "html") -> str:
+    """'<board>_<n>_channels_si_report_<time stamp>.html' (or .pdf)."""
+    return report_name(board_stem, f"{count}_channels", when, fmt)
+
+
+def _now() -> str:
+    return _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def _notes_list(notes) -> str:
+    return ("<ul>" + "".join(f"<li>{_e(n)}</li>" for n in notes) + "</ul>"
+            if notes else "<p>None.</p>")
+
+
+METHOD_NOTE = ("<p class='note'>Line sections: a 2D field solve of each cross-section "
+               "(Djordjevic-Sarkar dielectric, the chosen roughness), cascaded as coupled "
+               "lossy lines with the vias' own models. Eyes: the pulse response's "
+               "statistical eye with the interface's jitter and noise; the PRBS eye is that "
+               "pattern's waveform with neither.</p>")
+
+# The picker at the top of a report of several channels: one channel shown, or all; the
+# address's #ch<n> (a summary link, say) picks one too.
+PICK_CSS = """
+.si-pick { position: sticky; top: 0; z-index: 3; background: #1e1e1e; padding: 8px 0;
+           border-bottom: 1px solid #3e3e3e; font-size: 14px; }
+.si-pick select { font-size: 14px; margin-right: 8px; max-width: 60%; }
+.si-pick button { margin-right: 4px; } .si-pick a { margin-left: 12px; }
+.si-step { margin-right: 8px; }
+.si-ch.hidden { display: none; }
+.si-ch, .si-ch h3 { scroll-margin-top: 52px; }
+"""
+
+PICK_JS = r"""
+(function () {
+  var pick = document.getElementById("si-pick");
+  var secs = document.querySelectorAll("section.si-ch");
+  function show(v) {
+    for (var i = 0; i < secs.length; i++)
+      secs[i].classList.toggle("hidden", v !== "all" && secs[i].id !== v);
+  }
+  function fromHash() {
+    var m = /^#(ch\d+)/.exec(location.hash);
+    if (!m) return false;
+    pick.value = m[1];
+    show(m[1]);
+    var el = document.getElementById(location.hash.slice(1));
+    if (el) el.scrollIntoView();
+    return true;
+  }
+  pick.addEventListener("change", function () {
+    show(pick.value);
+    if (pick.value !== "all") {
+      history.replaceState(null, "", "#" + pick.value);
+      document.getElementById(pick.value).scrollIntoView();
+    }
+  });
+  var steps = document.querySelectorAll(".si-step button");
+  for (var i = 0; i < steps.length; i++) steps[i].addEventListener("click", function () {
+    var n = pick.options.length, k = pick.selectedIndex + parseInt(this.dataset.step, 10);
+    pick.selectedIndex = ((k % n) + n) % n;
+    pick.dispatchEvent(new Event("change"));
+  });
+  window.addEventListener("hashchange", fromHash);
+  if (!fromHash()) show(pick.value);
+})();
+"""
+
+
+def _channel_parts(r, snap, pdf: bool, pre: str = "", h: str = "h2") -> tuple:
+    """A channel's part of a report: its result, checks, channel table, plots and line
+    sections, with ids starting ``pre`` and headings ``h``; and its Touchstone attachment
+    for a PDF (None for a web page, where it is a download link)."""
+    ch = r.channel
+    parts: List[str] = []
     st = r.status
     parts.append(f"<p>Overall: {_status(st)} ({sum(c.status == 'PASS' for c in r.checks)} of "
                  f"{len(r.checks)} checks pass).</p>")
-    parts.append("<h2 id='checks'>Checks</h2>")
+    parts.append(f"<{h} id='{pre}checks'>Checks</{h}>")
     parts.append(_table(["Check", "Result", "Detail"],
                         [[_e(c.check), _status(c.status), _e(c.text)] for c in r.checks]))
 
     # ---------------- channel
     p = ch.proto()
-    parts.append("<h2 id='channel'>Channel</h2>")
+    parts.append(f"<{h} id='{pre}channel'>Channel</{h}>")
     rows = [("Nets", ", ".join(r.nets)), ("Interface", p.label),
             ("Ports", "; ".join(r.port_names)),
             ("Data rate", f"{ch.value('rate_bps') / 1e9:.4g} Gb/s"),
@@ -157,7 +312,7 @@ def write_si_report(path, result, snap, setup, scan=None, progress=None) -> Path
     parts.append(_table(["", ""], [[_e(a), _e(b)] for a, b in rows]))
 
     # ---------------- plots
-    parts.append("<h2 id='plots'>Plots</h2>")
+    parts.append(f"<{h} id='{pre}plots'>Plots</{h}>")
     if r.eye is not None:
         e = r.eye
         parts.append(_img(pdf, _eye_png(r, e, f"Statistical eye at BER {e.ber:g}: "
@@ -176,9 +331,9 @@ def write_si_report(path, result, snap, setup, scan=None, progress=None) -> Path
     if r.waves is not None:
         parts.append(_img(pdf, _waves_png(r)))
     name, data = _touchstone(r)
-    attachments = []
+    attachment = None
     if pdf:
-        attachments.append((name, data, "The channel's S-parameters (Touchstone)"))
+        attachment = (name, data, f"{ch.name}: the channel's S-parameters (Touchstone)")
         parts.append(f"<p class='note'>The channel's S-parameters are attached: {_e(name)}.</p>")
     else:
         href = "data:text/plain;base64," + base64.b64encode(data).decode("ascii")
@@ -186,7 +341,7 @@ def write_si_report(path, result, snap, setup, scan=None, progress=None) -> Path
                      f"({_e(name)})</a>: 50 Ω, at the die ports above.</p>")
 
     # ---------------- sections
-    parts.append("<h2 id='sections'>Line sections</h2>")
+    parts.append(f"<{h} id='{pre}sections'>Line sections</{h}>")
     srows = []
     for sec in r.sections:
         s0 = sec.segs[0]
@@ -198,37 +353,29 @@ def write_si_report(path, result, snap, setup, scan=None, progress=None) -> Path
                       f"{sec.zdiff:.1f}" if sec.zdiff else ""])
     parts.append(_table(["Nets", "From (mm)", "Layer", "Width (mm)", "Length (mm)", "Z0 (Ω)",
                          "Zdiff (Ω)"], srows))
+    return parts, attachment
 
-    # ---------------- scan
-    if scan is not None:
-        parts.append("<h2 id='scan'>Quick Scan</h2>")
-        order = {"FAIL": 0, "WARN": 1, "PASS": 2}
-        nets = sorted(scan.nets, key=lambda n: (order[n.status], n.net))[:SCAN_ROWS_MAX]
-        parts.append(_table(
-            ["Net", "Result", "Z0 (Ω)", "Zdiff (Ω)", "Length (mm)", "Worst NEXT", "Findings"],
-            [[_e(n.net + (f" / {n.partner}" if n.partner else "")), _status(n.status),
-              f"{n.z_min:.1f}–{n.z_max:.1f}",
-              f"{n.zdiff_min:.1f}–{n.zdiff_max:.1f}" if n.zdiff_min is not None else "",
-              f"{n.length_mm:.1f}",
-              _e(f"{n.worst_kb:.3f} {n.worst_aggressor}") if n.worst_aggressor else "",
-              "<br>".join(_e(f"{f.status} {f.check}: {f.text}") for f in n.findings
-                          if f.status != "PASS")] for n in nets]))
-        if len(scan.nets) > SCAN_ROWS_MAX:
-            parts.append(f"<p class='note'>The first {SCAN_ROWS_MAX} of {len(scan.nets)} "
-                         "nets, failing first.</p>")
 
-    # ---------------- notes
-    parts.append("<h2 id='notes'>Notes</h2>")
-    parts.append("<ul>" + "".join(f"<li>{_e(n)}</li>" for n in r.notes) + "</ul>"
-                 if r.notes else "<p>None.</p>")
-    parts.append("<p class='note'>Line sections: a 2D field solve of each cross-section "
-                 "(Djordjevic-Sarkar dielectric, the chosen roughness), cascaded as coupled "
-                 "lossy lines with the vias' own models. Eyes: the pulse response's "
-                 "statistical eye with the interface's jitter and noise; the PRBS eye is that "
-                 "pattern's waveform with neither.</p>")
-    parts.append(notes_section(pdf))
-    return finish(path, f"KiPI Signal Integrity report: {ch.name}", parts, CSS, pdf,
-                  attachments)
+def _scan_parts(scan) -> List[str]:
+    """The Quick Scan's nets, failing first; nothing without a scan."""
+    if scan is None:
+        return []
+    parts = ["<h2 id='scan'>Quick Scan</h2>"]
+    order = {"FAIL": 0, "WARN": 1, "PASS": 2}
+    nets = sorted(scan.nets, key=lambda n: (order[n.status], n.net))[:SCAN_ROWS_MAX]
+    parts.append(_table(
+        ["Net", "Result", "Z0 (Ω)", "Zdiff (Ω)", "Length (mm)", "Worst NEXT", "Findings"],
+        [[_e(n.net + (f" / {n.partner}" if n.partner else "")), _status(n.status),
+          f"{n.z_min:.1f}–{n.z_max:.1f}",
+          f"{n.zdiff_min:.1f}–{n.zdiff_max:.1f}" if n.zdiff_min is not None else "",
+          f"{n.length_mm:.1f}",
+          _e(f"{n.worst_kb:.3f} {n.worst_aggressor}") if n.worst_aggressor else "",
+          "<br>".join(_e(f"{f.status} {f.check}: {f.text}") for f in n.findings
+                      if f.status != "PASS")] for n in nets]))
+    if len(scan.nets) > SCAN_ROWS_MAX:
+        parts.append(f"<p class='note'>The first {SCAN_ROWS_MAX} of {len(scan.nets)} "
+                     "nets, failing first.</p>")
+    return parts
 
 
 def _buffer(b) -> str:

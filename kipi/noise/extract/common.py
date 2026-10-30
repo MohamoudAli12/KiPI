@@ -164,9 +164,9 @@ def board_ports(snap: BoardSnapshot, setup: PISetup, agg, op,
     # A capacitor without a model gets its value from the board and typical parasitics,
     # as in the waveforms' own split (kipi.noise.parasitics).
     from kipi.ac.model import CapModel
-    from kipi.core.model.parts import parse_capacitance
+    from kipi.core.model.parts import parse_capacitance, part_value
     from kipi.noise.parasitics import FALLBACK_C_F, FALLBACK_ESL_H, FALLBACK_ESR_OHM
-    values = {f.reference: f.value for f in snap.footprints}
+    values = {f.reference: part_value(f, parse_capacitance) for f in snap.footprints}
     for ref in missing:
         pads = [p for p in snap.pads if p.footprint == ref]
         a = [p for p in pads if p.net in rail]

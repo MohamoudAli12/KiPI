@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from kipi.core.model.board import BoardSnapshot
 
@@ -34,12 +34,32 @@ def parse_resistance(value: str) -> Optional[float]:
     return base * _PREFIX[prefix]
 
 
+# Fields a project may keep a part's value in when its Value holds a library name
+# ("C_220n_0402"), matched whatever their case.
+VALUE_FIELDS = ("val", "value")
+
+
+def value_fields(fp) -> list:
+    """The non-empty VALUE_FIELDS of footprint ``fp``, in that order."""
+    fields = {k.lower(): (v or "").strip()
+              for k, v in (getattr(fp, "fields", None) or {}).items()}
+    return [fields[n] for n in VALUE_FIELDS if fields.get(n)]
+
+
+def part_value(fp, parse: Callable[[str], Optional[float]]) -> str:
+    """Footprint ``fp``'s value text: its Value, or, when ``parse`` cannot read that, the
+    first of its VALUE_FIELDS it can (else its Value as it is)."""
+    if parse(fp.value) is not None:
+        return fp.value
+    return next((v for v in value_fields(fp) if parse(v) is not None), fp.value)
+
+
 def resistor_ohms(snap: Optional[BoardSnapshot], ref: str) -> Optional[float]:
     """The value of resistor ``ref`` (reference R<n>) in ohms, if it can be read."""
     if snap is None or not _RESISTOR_REF_RE.match(ref or ""):
         return None
-    value = next((f.value for f in snap.footprints if f.reference == ref), "")
-    return parse_resistance(value)
+    fp = next((f for f in snap.footprints if f.reference == ref), None)
+    return parse_resistance(part_value(fp, parse_resistance)) if fp else None
 
 
 # "100n", "4.7uF", "10 µF 6.3V X5R", "1u0", "4n7", "0.1", "22p". A bare number is farads

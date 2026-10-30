@@ -96,3 +96,12 @@ def test_phases_are_filled_from_the_board():
     assert ph.high_side == PinRef("U1", "VIN", ["1"])
     assert ph.low_side == PinRef("U1", "GND", ["2"])
     assert ph.input_caps == ["C1"] and ph.output_caps == ["C2"]
+
+
+def test_an_inductor_value_kept_in_a_val_field_is_read():
+    setup, snap = buck_setup(), buck_board()
+    fp = next(f for f in snap.footprints if f.reference == "L1")
+    fp.value, fp.fields = "L_1u_1210", {"Val": "2.2u"}
+    vrm = next(v for v in setup.vrms if v.name == "U1")
+    (ph,) = seed_phases(snap, setup, vrm, "buck")
+    assert ph.inductance_h == pytest.approx(2.2e-6)

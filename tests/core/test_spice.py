@@ -199,6 +199,14 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+def test_a_parts_val_field_is_one_more_name_to_find_its_model_by(app):
+    from kipi.gui.spice_dialog import part_values
+    snap = make_board()
+    snap.footprints.append(Footprint("f9", "C110", "C_220n_0402", (5, 0), "top",
+                                     fields={"Val": "GRM155R71C224KA12"}))
+    assert part_values(snap, ["C110", "U1"]) == ["C_220n_0402", "GRM155R71C224KA12", "LDO"]
+
+
 def test_the_dialog_shows_the_values_or_why_not(app):
     from qtpy.QtWidgets import QDialogButtonBox
     from kipi.gui.spice_dialog import CAPACITOR, SpiceModelDialog

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from kipi.core.model.board import BoardSnapshot
-from kipi.core.model.parts import is_capacitor_ref
+from kipi.core.model.parts import is_capacitor_ref, parse_capacitance, part_value
 from kipi.dc.pi.model import PISetup, Vrm
 
 
@@ -33,7 +33,7 @@ def capacitor_candidates(snap: BoardSnapshot, nets) -> List[CapCandidate]:
     for p in snap.pads:
         if p.footprint and is_capacitor_ref(p.footprint):
             pads_by_ref.setdefault(p.footprint, []).append(p.net)
-    values = {f.reference: f.value for f in snap.footprints}
+    values = {f.reference: part_value(f, parse_capacitance) for f in snap.footprints}
     footprints = {f.reference: f.footprint for f in snap.footprints}
     out = []
     for ref, pad_nets in pads_by_ref.items():
