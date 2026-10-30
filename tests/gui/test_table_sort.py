@@ -23,6 +23,11 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+def _flat(points):
+    """(f, |Z|) points as one list: pytest.approx compares no tuples inside a list."""
+    return [v for pt in points for v in pt]
+
+
 def column(t, col):
     return [t.item(r, col).text() for r in range(t.rowCount())]
 
@@ -112,10 +117,12 @@ def test_target_points_sort_by_frequency_or_impedance(app):
     ed = panel.probe_list.editor
     h = ed.points.horizontalHeader()
     h.sectionClicked.emit(1)                                # |Z| ascending
-    assert probe.target_points == pytest.approx([(1e4, 0.01), (1e6, 0.02), (1e5, 0.03)])
+    assert _flat(probe.target_points) == pytest.approx(
+        _flat([(1e4, 0.01), (1e6, 0.02), (1e5, 0.03)]))
     h.sectionClicked.emit(0)                                # frequency, then reversed
     h.sectionClicked.emit(0)
-    assert probe.target_points == pytest.approx([(1e6, 0.02), (1e5, 0.03), (1e4, 0.01)])
+    assert _flat(probe.target_points) == pytest.approx(
+        _flat([(1e6, 0.02), (1e5, 0.03), (1e4, 0.01)]))
     assert ed.points.cellWidget(0, 0).value() == pytest.approx(1e3)      # kHz
     h.sectionClicked.emit(2)                                # the remove buttons don't sort
     assert probe.target_points[0] == pytest.approx((1e6, 0.02))

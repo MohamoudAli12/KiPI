@@ -17,6 +17,11 @@ from kipi.dc.pi.model import PinRef, PISetup, Vrm
 MASK = [(1e6, 0.02), (1e5, 0.01)]
 
 
+def _flat(points):
+    """(f, |Z|) points as one list: pytest.approx compares no tuples inside a list."""
+    return [v for pt in points for v in pt]
+
+
 def test_mask_is_log_log_linear_and_flat_outside():
     t = mask_at(MASK, [1e3, 1e5, math.sqrt(1e5 * 1e6), 1e6, 1e9])
     assert t == pytest.approx([0.01, 0.01, math.sqrt(0.01 * 0.02), 0.02, 0.02])
@@ -94,11 +99,13 @@ def test_editor_switches_to_a_custom_mask(app):
     assert probe.target_custom and probe.target_points == [(1e5, 0.01)]
     ed.btn_point.click()                                # a decade up, same |Z|
     ed.points.cellWidget(1, 1).setValue(20)             # 20 mΩ
-    assert probe.target_points == pytest.approx([(1e5, 0.01), (1e6, 0.02)])
+    assert _flat(probe.target_points) == pytest.approx(
+        _flat([(1e5, 0.01), (1e6, 0.02)]))
     assert "custom target (2 points)" in panel._describe_probe(probe)
 
     ed.points.cellWidget(0, 2).click()                  # remove the first point
-    assert probe.target_points == pytest.approx([(1e6, 0.02)])
+    assert _flat(probe.target_points) == pytest.approx(
+        _flat([(1e6, 0.02)]))
     ed.target_kind.setCurrentIndex(0)                   # back to flat, mask kept
     assert not probe.target_custom and probe.target_mask() is None
     assert probe.target_ohm == pytest.approx(0.01) and len(probe.target_points) == 1
