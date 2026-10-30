@@ -32,7 +32,8 @@ from kipi import __version__
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import classify_nets, sorted_nets
 from kipi.dc.gui.pi_panel import PIPanel
-from kipi.gui import theme
+from kipi.gui import multi_tick, theme
+from kipi.gui.height_grip import HeightGrip
 from kipi.gui.docks import make_detachable
 from kipi.gui.heartbeat import Heartbeat, busy_cursor
 from kipi.gui.stackup_window import StackupWindow
@@ -46,6 +47,10 @@ log = logging.getLogger("kipi")
 
 _KIND_TAG = {"power": "PWR", "ground": "GND", "signal": ""}
 _KIND_COLOR = {"power": "#e07050", "ground": "#70a0e0", "signal": "#a0a0a0"}
+# The SI Nets list's sections, each under a header row that folds it.
+_NET_SECTIONS = (("pairs", "Differential pairs"), ("single", "Single-ended"),
+                 ("planes", "Ground and power"))
+_SECTION = Qt.UserRole + 3              # a row's section; a header has no net (UserRole)
 MAX_AUTO_NETS = 4
 # A save can touch the board file several times (KiCad writes a new file and renames
 # it); the window waits this long for the file to settle before offering to reload.
@@ -767,8 +772,12 @@ class MainWindow(QMainWindow):
         self.net_list.itemChanged.connect(self._on_net_item_changed)
         self.net_list.setToolTip("Tick the nets to analyze: they are drawn in 3D and offered "
                                  "in the setup's pin pickers. Select nets (Ctrl or Shift for "
-                                 "more) to pick them out in 3D, the rest dimmed; Esc clears")
+                                 "more) to pick them out in 3D, the rest dimmed; Esc clears. "
+                                 "Several selected tick together: click one's tick box, press "
+                                 "Space, or right-click")
         self.net_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        multi_tick.install(self.net_list, lambda: self._on_net_item_changed(None),
+                           self._net_kind_menu)
         self.net_list.itemSelectionChanged.connect(self._update_focus)
         esc = QShortcut(QKeySequence(Qt.Key_Escape), self.net_list)
         esc.setContext(Qt.WidgetShortcut)
@@ -776,6 +785,18 @@ class MainWindow(QMainWindow):
         # Rows enough for the scroll bar's handle to move: squeezed to two rows it filled
         # the bar and could not be dragged. A short dock scrolls the whole panel instead.
         _rows(self.net_list, 8)
+        self.net_list.itemClicked.connect(self._net_header_clicked)
+        # The grip under it makes it as tall as wanted: the panel then scrolls.
+        self.net_grip = HeightGrip(self.net_list, g_nets)
+        saved = QSettings("KiPI", "KiPI").value("view/net_list_height", 0)
+        try:
+            self.net_grip.set_height(int(saved or 0))
+        except (TypeError, ValueError):
+            pass
+        self.net_grip.height_changed.connect(
+            lambda h: QSettings("KiPI", "KiPI").setValue("view/net_list_height", h))
+        folded = QSettings("KiPI", "KiPI").value("view/nets_folded", "")
+        self._nets_folded = set(str(folded or "").split(",")) - {""}
         row = QHBoxLayout()
         btn_power = QPushButton("All power", g_nets)
         btn_power.setToolTip("Tick every power and ground net (keeps the nets already ticked)")
@@ -789,6 +810,7 @@ class MainWindow(QMainWindow):
         ln.addWidget(self.net_filter)
         ln.addWidget(self.chk_power_only)
         ln.addWidget(self.net_list, 1)
+        ln.addWidget(self.net_grip)
         ln.addLayout(row)
 
         # --- layers
@@ -1435,11 +1457,12 @@ class MainWindow(QMainWindow):
     def _si_default_nets(self, setup, kinds) -> set:
         """SI's nets before any are chosen: the channels' nets (their pairs' legs and
         aggressors), or else every differential pair; and the main ground, for the planes."""
-        from kipi.si.pairs import pair_map
+        from kipi.si.pairs import manual_of, pair_map
         auto = {n for c in getattr(setup, "si_channels", [])
                 for n in (c.net, c.partner, *c.aggressors) if n}
         if not auto:
-            auto = set(pair_map([n for n, k in kinds.items() if k == "signal"]))
+            auto = set(pair_map([n for n, k in kinds.items() if k == "signal"],
+                                manual_of(setup.si)))
         return auto
 
     def _populate_nets(self, chosen: Optional[List[str]], setup):
@@ -1475,12 +1498,23 @@ class MainWindow(QMainWindow):
 
         self.net_list.blockSignals(True)
         self.net_list.clear()
-        for name, kind, tag in self._net_rows(snap, kinds, family):
-            extra = f"  [{tag}]" if tag else ""
+        section = None
+        from kipi.si.pairs import manual_of
+        manual = manual_of(setup.si)
+        by_user = set(manual[1]) | {n for x in manual[0] for n in x}
+        for name, kind, tag in self._net_rows(snap, kinds, family, manual):
+            sec = self._net_section(kind, tag) if family == "si" else ""
+            if sec and sec != section:
+                section = sec
+                self.net_list.addItem(self._net_header(sec))
+            shown = tag + (", set" if tag else "set") if family == "si" and name in by_user \
+                else tag
+            extra = f"  [{shown}]" if shown else ""
             it = QListWidgetItem(f"{name}{extra}   ({pad_count.get(name, 0)} pads)")
             it.setData(Qt.UserRole, name)
             it.setData(Qt.UserRole + 1, kind)
             it.setData(Qt.UserRole + 2, tag)
+            it.setData(_SECTION, sec)
             it.setForeground(QColor(_KIND_COLOR[kind] if tag != "slow" else "#707070"))
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(Qt.Checked if name in auto else Qt.Unchecked)
@@ -1490,7 +1524,88 @@ class MainWindow(QMainWindow):
         self._apply_net_filter()
 
     @staticmethod
-    def _net_rows(snap, kinds, family: str):
+    def _net_section(kind: str, tag: str) -> str:
+        return "pairs" if tag == "PAIR" else "single" if kind == "signal" else "planes"
+
+    def _net_header(self, sec: str) -> QListWidgetItem:
+        """A section's header row: not a net, not ticked or selected; a click folds it."""
+        it = QListWidgetItem()
+        it.setData(_SECTION, sec)
+        it.setFlags(Qt.ItemIsEnabled)
+        f = it.font()
+        f.setBold(True)
+        it.setFont(f)
+        it.setToolTip("Click to fold or unfold this section")
+        return it
+
+    def _net_items(self):
+        """The Nets list's net rows (not the section headers)."""
+        for i in range(self.net_list.count()):
+            it = self.net_list.item(i)
+            if it.data(Qt.UserRole) is not None:
+                yield it
+
+    def _net_header_clicked(self, item):
+        if item.data(Qt.UserRole) is not None:
+            return
+        self._nets_folded ^= {item.data(_SECTION)}
+        QSettings("KiPI", "KiPI").setValue("view/nets_folded", ",".join(sorted(self._nets_folded)))
+        self._apply_net_filter()
+
+    def _update_net_headers(self):
+        """Each header's fold arrow and how many of its nets are ticked."""
+        total: Dict[str, int] = {}
+        ticked: Dict[str, int] = {}
+        for it in self._net_items():
+            sec = it.data(_SECTION)
+            total[sec] = total.get(sec, 0) + 1
+            ticked[sec] = ticked.get(sec, 0) + (it.checkState() == Qt.Checked)
+        labels = dict(_NET_SECTIONS)
+        for i in range(self.net_list.count()):
+            it = self.net_list.item(i)
+            if it.data(Qt.UserRole) is None:
+                sec = it.data(_SECTION)
+                arrow = "▸" if sec in self._nets_folded else "▾"
+                it.setText(f"{arrow} {labels.get(sec, sec)}   "
+                           f"({ticked.get(sec, 0)} of {total.get(sec, 0)} ticked)")
+
+    def _net_kind_menu(self, menu, items):
+        """The right-click menu's SI entries: set the selected signal nets as a pair or
+        single-ended, over what their names say, or back to their names."""
+        setup = self.solve_panel.setup
+        if self._net_family() != "si" or setup is None:
+            return
+        nets = [it.data(Qt.UserRole) for it in items if it.data(Qt.UserRole + 1) == "signal"]
+        if not nets:
+            return
+        from kipi.si.pairs import manual_of
+        pairs, single = manual_of(setup.si)
+        by_user = set(single) | {n for x in pairs for n in x}
+        short = [n.rsplit("/", 1)[-1] for n in nets]
+        menu.addSeparator()
+        a_pair = menu.addAction(f"Make a differential pair ({short[0]} +, {short[1]} −)"
+                                if len(nets) == 2 else
+                                "Make a differential pair (select its two nets)")
+        a_pair.setEnabled(len(nets) == 2)
+        a_pair.triggered.connect(lambda: self._set_net_kind(nets, "pair"))
+        a_single = menu.addAction("Make single-ended")
+        a_single.triggered.connect(lambda: self._set_net_kind(nets, "single"))
+        a_auto = menu.addAction("Back to automatic (by name)")
+        a_auto.setEnabled(bool(by_user & set(nets)))
+        a_auto.triggered.connect(lambda: self._set_net_kind(nets, "auto"))
+
+    def _set_net_kind(self, nets, kind: str):
+        from kipi.si.pairs import set_kind
+        setup = self.solve_panel.setup
+        set_kind(setup.si, nets, kind)
+        what = {"pair": "a differential pair", "single": "single-ended",
+                "auto": "paired by name again"}[kind]
+        self.log(f"{', '.join(nets)}: {what}")
+        self._populate_nets(self._checked_nets(), setup)   # the same ticks, re-sorted
+        self._show_unsaved()
+
+    @staticmethod
+    def _net_rows(snap, kinds, family: str, manual=None):
         """(name, kind, tag) in the list's order. Power analyses: power, ground, signals.
         SI: differential pairs (legs together), the other signals, the slow control nets,
         then ground and power (the reference planes)."""
@@ -1499,7 +1614,7 @@ class MainWindow(QMainWindow):
         from kipi.si.pairs import pair_map
         from kipi.si.scan import is_slow
         signals = [n for n, k in kinds.items() if k == "signal"]
-        pairs = pair_map(signals)
+        pairs = pair_map(signals, manual)
 
         def key(n):
             k = kinds[n]
@@ -1521,15 +1636,22 @@ class MainWindow(QMainWindow):
         text = self.net_filter.text().strip().lower()
         only = self.chk_power_only.isChecked()
         si = self._net_family() == "si"
-        for i in range(self.net_list.count()):
-            it = self.net_list.item(i)
+        shown = set()                       # sections with a net the filters let through
+        for it in self._net_items():
             name = it.data(Qt.UserRole).lower()
             kind = it.data(Qt.UserRole + 1)
             # The family's own nets, and any ticked: PI hides signals, SI power and ground.
             other = (kind != "signal") if si else (kind == "signal")
             hide = (text and text not in name) or (only and other
                                                   and it.checkState() != Qt.Checked)
-            it.setHidden(bool(hide))
+            if not hide:
+                shown.add(it.data(_SECTION))
+            it.setHidden(bool(hide) or it.data(_SECTION) in self._nets_folded)
+        for i in range(self.net_list.count()):
+            it = self.net_list.item(i)
+            if it.data(Qt.UserRole) is None:
+                it.setHidden(it.data(_SECTION) not in shown)
+        self._update_net_headers()
 
     def _set_net_family_widgets(self):
         """The Nets box's filter and quick-tick button for the mode's family."""
@@ -1551,8 +1673,8 @@ class MainWindow(QMainWindow):
             else "Tick every power and ground net (keeps the nets already ticked)")
 
     def _checked_nets(self) -> List[str]:
-        return [self.net_list.item(i).data(Qt.UserRole) for i in range(self.net_list.count())
-                if self.net_list.item(i).checkState() == Qt.Checked]
+        return [it.data(Qt.UserRole) for it in self._net_items()
+                if it.checkState() == Qt.Checked]
 
     def _checked_set(self) -> frozenset:
         """Cached set of checked nets; cleared whenever a checkbox changes."""
@@ -1563,8 +1685,7 @@ class MainWindow(QMainWindow):
     def _set_checked(self, pred):
         """Check exactly the net items for which ``pred(item)`` is true, then sync once."""
         self.net_list.blockSignals(True)
-        for i in range(self.net_list.count()):
-            it = self.net_list.item(i)
+        for it in self._net_items():
             it.setCheckState(Qt.Checked if pred(it) else Qt.Unchecked)
         self.net_list.blockSignals(False)
         self._checked_cache = None
@@ -1600,6 +1721,7 @@ class MainWindow(QMainWindow):
 
     def _on_net_item_changed(self, item):
         self._checked_cache = None
+        self._update_net_headers()
         self.viewer.set_included_nets(self._checked_set())
         self._sync_timer.start()
         self._show_unsaved()

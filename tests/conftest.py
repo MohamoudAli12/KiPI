@@ -125,3 +125,19 @@ def no_3d(monkeypatch):
             return lambda *a, **k: None
 
     monkeypatch.setattr(main_window, "Viewer3D", StubViewer)
+
+
+@pytest.fixture(autouse=True)
+def own_settings(tmp_path_factory):
+    """Tests keep their Qt settings (QSettings("KiPI", "KiPI"): folded Nets sections, the
+    list's height, ...) in a folder of their own, never the user's: a KiPI open on this
+    machine and a test run must not read each other's."""
+    try:
+        from qtpy.QtCore import QSettings
+    except Exception:                       # no Qt binding: nothing to keep apart
+        yield
+        return
+    folder = str(tmp_path_factory.mktemp("settings"))
+    for fmt in (QSettings.NativeFormat, QSettings.IniFormat):
+        QSettings.setPath(fmt, QSettings.UserScope, folder)
+    yield

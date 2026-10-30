@@ -62,8 +62,7 @@ def test_nets_list_follows_the_mode(app, no_3d, tmp_path):
         w._populate_nets(setup.nets, setup)
 
         def shown():
-            return [w.net_list.item(i).data(Qt.UserRole) for i in range(w.net_list.count())
-                    if not w.net_list.item(i).isHidden()]
+            return [it.data(Qt.UserRole) for it in w._net_items() if not it.isHidden()]
 
         def ticked():
             return set(w._checked_nets())
@@ -76,7 +75,8 @@ def test_nets_list_follows_the_mode(app, no_3d, tmp_path):
         # SI's own ticks: the channels' nets (and the main ground), not PI's.
         assert {"USB_P", "USB_N", "CLK"} <= ticked()
         assert setup.nets == ["GND"]
-        w.net_list.item(rows.index("CLK")).setCheckState(Qt.Unchecked)
+        next(it for it in w._net_items() if it.data(Qt.UserRole) == "CLK").setCheckState(
+            Qt.Unchecked)
         w.findChild(QRadioButton, "mode_dc").setChecked(True)
         assert ticked() == {"GND"} and "CLK" not in setup.si_nets
         assert w.chk_power_only.text() == "Power && ground only"
@@ -232,5 +232,93 @@ def test_picking_another_channel_keeps_the_view(app, no_3d, tmp_path):
                 assert w.si_plot.result is panel.result
                 assert w.views.currentWidget() is view
                 assert panel.tabs.currentWidget() is panel.ch_list
+    finally:
+        w.close()
+
+
+def test_si_nets_fold_into_sections(app, no_3d, tmp_path):
+    from qtpy.QtCore import Qt
+    from kipi.gui.main_window import MainWindow
+    snap, setup = make_board(), make_setup()
+    w = MainWindow()
+    w._run = lambda fn, done, name, **k: None
+    try:
+        w.snapshot = snap
+        w.solve_panel.set_board(snap, setup)
+        w._nets_folded = set()
+        w.findChild(QRadioButton, "mode_si").setChecked(True)
+        w.chk_power_only.setChecked(False)
+
+        def headers():
+            return {w.net_list.item(i).data(Qt.UserRole + 3): w.net_list.item(i)
+                    for i in range(w.net_list.count())
+                    if w.net_list.item(i).data(Qt.UserRole) is None}
+
+        def shown():
+            return {it.data(Qt.UserRole) for it in w._net_items() if not it.isHidden()}
+        h = headers()
+        assert set(h) == {"pairs", "single", "planes"}
+        assert h["pairs"].text().startswith("▾ Differential pairs")
+        assert not h["pairs"].flags() & Qt.ItemIsUserCheckable
+        assert {"USB_P", "USB_N", "CLK"} <= shown()
+        # A header's click folds its section, and ticks and the 3D view skip headers.
+        w._net_header_clicked(h["pairs"])
+        assert "USB_P" not in shown() and "CLK" in shown()
+        assert h["pairs"].text().startswith("▸ Differential pairs")
+        assert None not in w._checked_nets()
+        w._net_header_clicked(h["pairs"])
+        assert "USB_P" in shown()
+        # Signal nets only: the planes' section keeps its ticked nets (the main ground),
+        # and goes, header and all, when none is ticked.
+        w.chk_power_only.setChecked(True)
+        planes = [it for it in w._net_items() if it.data(Qt.UserRole + 3) == "planes"]
+        assert all(it.isHidden() == (it.checkState() != Qt.Checked) for it in planes)
+        w._set_checked(lambda it: it.data(Qt.UserRole + 1) == "signal")
+        assert headers()["planes"].isHidden()
+    finally:
+        w.close()
+
+
+def test_right_click_sets_a_net_single_ended_or_paired(app, no_3d, tmp_path):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QMenu
+    from kipi.gui.main_window import MainWindow
+    snap, setup = make_board(), make_setup()
+    w = MainWindow()
+    w._run = lambda fn, done, name, **k: None
+    try:
+        w.snapshot = snap
+        w.solve_panel.set_board(snap, setup)
+        w._nets_folded = set()
+        w.findChild(QRadioButton, "mode_si").setChecked(True)
+
+        def section(net):
+            return next(it.data(Qt.UserRole + 3) for it in w._net_items()
+                        if it.data(Qt.UserRole) == net)
+
+        def row(net):
+            return next(it for it in w._net_items() if it.data(Qt.UserRole) == net)
+        assert section("USB_P") == "pairs" and section("CLK") == "single"
+        menu = QMenu()
+        w._net_kind_menu(menu, [row("USB_P")])
+        acts = {a.text(): a for a in menu.actions()}
+        assert not acts["Make a differential pair (select its two nets)"].isEnabled()
+        acts["Make single-ended"].trigger()
+        # The pair is broken: both legs single-ended, the one set tagged so.
+        assert section("USB_P") == "single" and section("USB_N") == "single"
+        assert "[set]" in row("USB_P").text()
+        assert setup.si.manual_single == ["USB_P"]
+        ticked = set(w._checked_nets())
+        menu = QMenu()
+        w._net_kind_menu(menu, [row("CLK"), row("USB_N")])
+        acts = {a.text(): a for a in menu.actions()}
+        acts["Make a differential pair (CLK +, USB_N −)"].trigger()
+        assert section("CLK") == "pairs" and setup.si.manual_pairs == [["CLK", "USB_N"]]
+        assert set(w._checked_nets()) == ticked                     # ticks kept
+        menu = QMenu()
+        w._net_kind_menu(menu, [row("USB_P"), row("CLK"), row("USB_N")])
+        next(a for a in menu.actions() if a.text().startswith("Back to")).trigger()
+        assert section("USB_P") == "pairs" and section("CLK") == "single"
+        assert setup.si.manual_pairs == [] and setup.si.manual_single == []
     finally:
         w.close()

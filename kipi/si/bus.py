@@ -105,8 +105,8 @@ def connected_parts(snap: BoardSnapshot, ref: str, index: Optional[_Index] = Non
     return sorted(count.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
-def bus_nets(snap: BoardSnapshot, tx: str, rx: str, index: Optional[_Index] = None
-             ) -> List[BusNet]:
+def bus_nets(snap: BoardSnapshot, tx: str, rx: str, index: Optional[_Index] = None,
+             manual=None) -> List[BusNet]:
     """Every signal net from part ``tx`` to part ``rx``: paired by name where both legs
     go between them, grouped and numbered by name, in group then index order."""
     from kipi.si.pairs import pair_map
@@ -116,7 +116,7 @@ def bus_nets(snap: BoardSnapshot, tx: str, rx: str, index: Optional[_Index] = No
         chain = ix.chain(net)
         if rx in ix.parts(chain):
             found[net] = tuple(chain[1:])
-    pairs = pair_map(list(found))
+    pairs = pair_map(list(found), manual)
     out, used = [], set()
     for net in found:
         if net in used:

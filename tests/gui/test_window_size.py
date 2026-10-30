@@ -80,3 +80,16 @@ def test_board_lists_stay_tall_enough_to_drag_their_scroll_bars(window):
     assert window.net_list.minimumHeight() >= 8 * rows
     assert window.layer_list.minimumHeight() >= 4 * rows
     assert window.info.minimumHeight() >= 4 * rows
+
+
+def test_the_net_list_grows_past_the_dock_and_the_panel_scrolls(window):
+    from qtpy.QtWidgets import QApplication, QDockWidget
+    area = window.findChild(QDockWidget, "board_dock").widget()
+    grip = window.net_grip
+    grip.set_height(3000)                          # far taller than any dock
+    QApplication.processEvents()
+    assert window.net_list.minimumHeight() == 3000
+    assert area.widget().height() > area.viewport().height()
+    assert area.verticalScrollBar().maximum() > 0  # the panel scrolls
+    grip.set_height(0)                             # never below its own minimum
+    assert window.net_list.minimumHeight() == grip.floor

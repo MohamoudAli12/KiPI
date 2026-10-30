@@ -7,6 +7,18 @@ milestones rather than versions that were ever set.
 ## 0.9.3 (in development)
 
 ### Added
+- **SI Nets list: sections, a taller list, and pairs set by hand.**
+  - The SI Nets list folds into **Differential pairs**, **Single-ended** and **Ground
+    and power**, each header with how many of its nets are ticked; a click on a header
+    folds or unfolds it. What is folded is remembered.
+  - A grip under the Nets list drags it as tall as wanted, and the Board panel then
+    scrolls; a double-click on it shrinks the list back. Its height is remembered.
+  - Selected nets tick together: click the tick box of any one of them, press Space, or
+    right-click for **Tick selected** and **Untick selected** (every mode).
+  - Where a name misleads, right-click the selected nets: **Make a differential pair**
+    (two nets, the first selected the positive leg), **Make single-ended**, or **Back to
+    automatic**. They are tagged *set*, saved with the setup, and the Quick Scan, **Add
+    bus** and new channels follow them.
 - **One SI report of several channels.** **Report several…** beside **Report** lists the
   solved channels, each ticked. The report of the ticked ones (HTML or PDF) opens with a
   summary of them all. In HTML, a picker at the top shows one channel or all of them,

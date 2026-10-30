@@ -33,7 +33,7 @@ from kipi.core.model.board import BoardSnapshot
 from kipi.core.progress import NULL, ProgressReporter
 from kipi.si.board import SIBoard, normal_of
 from kipi.si.extract import SNAP_MM, _Nodes, net_segments
-from kipi.si.pairs import diff_target, pair_map
+from kipi.si.pairs import diff_target, manual_of, pair_map
 
 C_MM_S = 299792458e3
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
@@ -54,6 +54,7 @@ class ScanSettings:
     stitch_radius_mm: float = 2.0       # a return via this near a layer change is enough
     targets: Dict[str, float] = field(default_factory=dict)   # net -> Z0 (or Zdiff) target
     include_slow: bool = False          # also nets named as slow controls (SLOW_NET)
+    manual: tuple = ((), ())            # the user's (pairs, single-ended nets)
     # Speed: a scan's cuts are screened, not signed off. A coarser mesh (×mesh_scale) is
     # within about 2 % of the channel solver's; ground copper's edges are compared to
     # ground_grid_mm (cuts that differ by less share one solve); workers: processes
@@ -194,7 +195,7 @@ def scan(snap: BoardSnapshot, nets: Optional[Sequence[str]] = None,
         board = board or SIBoard(snap, check_cancel=progress.check_cancel)
         board._tile_index()
     all_signals = signal_nets(snap)
-    partners = pair_map(all_signals)
+    partners = pair_map(all_signals, s.manual)
     skipped = []
     if nets is None:
         nets = all_signals
@@ -662,4 +663,5 @@ def settings_of(si) -> ScanSettings:
                         diff_target_ohm=si.diff_target_ohm, kb_limit=si.kb_limit,
                         f_max_hz=si.scan_f_max_hz, skew_limit_mm=si.skew_limit_mm,
                         stitch_radius_mm=si.stitch_radius_mm,
-                        include_slow=getattr(si, "scan_slow", False))
+                        include_slow=getattr(si, "scan_slow", False),
+                        manual=manual_of(si))

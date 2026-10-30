@@ -9,7 +9,7 @@ letter of its own between separators or at an end (``USB_P``/``USB_N``,
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 _SWAPS = [
     (re.compile(r"(?<![A-Za-z])DP(?![A-Za-z])"), "DP", "DN"),
@@ -88,9 +88,46 @@ def diff_target(net: str) -> float:
     return DEFAULT_DIFF_OHM if z is None else z
 
 
-def pair_map(nets: Iterable[str]) -> Dict[str, str]:
-    """Each paired net's partner, both ways."""
+Manual = Tuple[Sequence[Sequence[str]], Sequence[str]]     # (pairs, single-ended nets)
+
+
+def pair_map(nets: Iterable[str], manual: Optional[Manual] = None) -> Dict[str, str]:
+    """Each paired net's partner, both ways. ``manual``: the user's own pairs and
+    single-ended nets, which win over the names: a net the user set either way leaves its
+    pair by name, and the user's pairs are pairs whatever their names."""
+    names = list(nets)
+    pairs, single = manual or ((), ())
+    pairs = [tuple(x) for x in pairs if len(x) == 2]
+    forced = set(single) | {n for x in pairs for n in x}
     out = {}
-    for p, n in find_pairs(nets):
-        out[p], out[n] = n, p
+    for p, n in find_pairs(names):
+        if p not in forced and n not in forced:
+            out[p], out[n] = n, p
+    have = set(names)
+    for p, n in pairs:
+        if p in have and n in have:
+            out[p], out[n] = n, p
     return out
+
+
+def manual_of(si) -> Manual:
+    """The user's pairs and single-ended nets from the SI settings (none on an older
+    setup)."""
+    return (list(getattr(si, "manual_pairs", None) or []),
+            list(getattr(si, "manual_single", None) or []))
+
+
+def set_kind(si, nets: Sequence[str], kind: str):
+    """Set ``nets`` as ``kind`` in the SI settings: "pair" (two nets, the first the
+    positive leg), "single" (each single-ended) or "auto" (by name again). Whatever they
+    were set as before is dropped first."""
+    drop = set(nets)
+    si.manual_pairs = [list(x) for x in getattr(si, "manual_pairs", None) or []
+                       if not drop & set(x)]
+    si.manual_single = [n for n in getattr(si, "manual_single", None) or [] if n not in drop]
+    if kind == "pair":
+        if len(nets) != 2:
+            raise ValueError("a pair is two nets")
+        si.manual_pairs.append(list(nets))
+    elif kind == "single":
+        si.manual_single.extend(nets)

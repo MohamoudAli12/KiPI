@@ -188,3 +188,23 @@ def test_pair_that_splits_into_two_nets_is_refused():
     # P and N swapped through the series parts is still a pair.
     check_pair_legs(tx, [["TX_P", "TX_N"], ["LANE_N", "LANE_P"]])
 
+
+def test_nets_set_by_hand_win_over_their_names():
+    from kipi.si.model import SISettings
+    from kipi.si.pairs import manual_of, pair_map, set_kind
+    nets = ["USB_P", "USB_N", "CLK_A", "CLK_B", "SDA"]
+    assert pair_map(nets) == {"USB_P": "USB_N", "USB_N": "USB_P"}
+    si = SISettings()
+    set_kind(si, ["CLK_A", "CLK_B"], "pair")              # names say nothing: paired
+    set_kind(si, ["USB_N"], "single")                     # one leg out: the pair goes
+    assert pair_map(nets, manual_of(si)) == {"CLK_A": "CLK_B", "CLK_B": "CLK_A"}
+    set_kind(si, ["USB_N", "CLK_B"], "auto")              # by name again
+    assert pair_map(nets, manual_of(si)) == {"USB_P": "USB_N", "USB_N": "USB_P"}
+    assert si.manual_pairs == [] and si.manual_single == []
+    with pytest.raises(ValueError):
+        set_kind(si, ["SDA"], "pair")
+    # Saved with the setup and read back.
+    from kipi.si.model import settings_from_dict
+    import dataclasses
+    set_kind(si, ["SDA", "CLK_A"], "pair")
+    assert settings_from_dict(dataclasses.asdict(si)).manual_pairs == [["SDA", "CLK_A"]]

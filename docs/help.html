@@ -2328,7 +2328,14 @@ picked. The ticks are saved with the setup.</p>
 first, then single nets, then slow control nets (greyed), then ground and power, each
 tagged. It keeps its own ticks, apart from the PI modes'. These start as the channels'
 nets and their aggressors, or every pair when there are no channels yet. <b>Signal nets
-only</b> hides the ground and power nets, and <b>All pairs</b> ticks every pair.</p>
+only</b> hides the ground and power nets, and <b>All pairs</b> ticks every pair.
+The sections (<b>Differential pairs</b>, <b>Single-ended</b>, <b>Ground and power</b>)
+fold with a click on their header; the grip under the list drags it taller, and the panel
+then scrolls (a double-click on the grip shrinks it back). Pairs are found by name; where a
+name misleads, select the nets and right-click: <b>Make a differential pair</b> (two nets,
+the first selected the positive leg), <b>Make single-ended</b>, or <b>Back to
+automatic</b>. The nets set so are tagged <i>set</i>; the Quick Scan, <b>Add bus</b> and
+new channels follow them, and they are saved with the setup.</p>
 <details open id="si-scan">
 <summary>Quick Scan</summary>
 <div class="body">

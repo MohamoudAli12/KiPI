@@ -20,8 +20,9 @@ COLUMNS = ("Net", "Group", "Through series parts")
 
 class BusDialog(QDialog):
     def __init__(self, snap: BoardSnapshot, taken: Sequence[str] = (), parent=None,
-                 tx: str = "", rx: str = "", not_fitted: Sequence[str] = ()):
+                 tx: str = "", rx: str = "", not_fitted: Sequence[str] = (), manual=None):
         super().__init__(parent)
+        self.manual = manual                       # the user's pairs and single nets
         self.setWindowTitle("Add a bus")
         self.snap = snap
         self.taken = set(taken)
@@ -126,7 +127,7 @@ class BusDialog(QDialog):
 
     def _fill_bus(self):
         tx, rx = self.cmb_tx.currentData(), self.cmb_rx.currentData()
-        self.bus = bus_nets(self.snap, tx, rx, self._ix) if tx and rx else []
+        self.bus = bus_nets(self.snap, tx, rx, self._ix, self.manual) if tx and rx else []
         self.tbl.blockSignals(True)            # half-filled rows: not counted yet
         self.tbl.setRowCount(0)
         for b in self.bus:
@@ -199,8 +200,9 @@ class BusDialog(QDialog):
 
 
 def add_bus(snap: BoardSnapshot, taken: Sequence[str], parent=None,
-            tx: str = "", rx: str = "", not_fitted: Sequence[str] = ()) -> Optional[list]:
+            tx: str = "", rx: str = "", not_fitted: Sequence[str] = (),
+            manual=None) -> Optional[list]:
     """Run the dialog: the channels to add, or None. ``not_fitted``: the parts the
-    build leaves off."""
-    d = BusDialog(snap, taken, parent, tx, rx, not_fitted)
+    build leaves off; ``manual``: the user's pairs and single-ended nets."""
+    d = BusDialog(snap, taken, parent, tx, rx, not_fitted, manual)
     return d.channels if d.exec() == QDialog.Accepted and d.channels else None

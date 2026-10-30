@@ -1083,14 +1083,14 @@ class SIPanel(QWidget):
     def _new_channel(self) -> Optional[Channel]:
         if self.snapshot is None:
             return None
-        from kipi.si.pairs import pair_map
+        from kipi.si.pairs import manual_of, pair_map
         taken = {c.net for c in self.setup.si_channels} | {c.partner for c in
                                                            self.setup.si_channels}
         nets = [n for n in self._signal_nets() if n not in taken]
         if not nets:
             self.lbl_errors.setText("• No signal net is left to add")
             return None
-        pairs = pair_map(self._signal_nets())
+        pairs = pair_map(self._signal_nets(), manual_of(self.setup.si))
         net = nets[0]
         partner = pairs.get(net, "")
         if partner and partner < net:
@@ -1218,11 +1218,13 @@ class SIPanel(QWidget):
         if self.snapshot is None:
             return
         from kipi.si.gui.bus_dialog import add_bus
+        from kipi.si.pairs import manual_of
         cur = self.ch_list.current()
         from kipi.si.model import Channel, not_fitted
         chans = add_bus(self.snapshot, [c.name for c in self.setup.si_channels], self,
                         getattr(cur, "driver_ref", ""), getattr(cur, "receiver_ref", ""),
-                        not_fitted(self.snapshot, self.setup.si, Channel("", "")))
+                        not_fitted(self.snapshot, self.setup.si, Channel("", "")),
+                        manual_of(self.setup.si))
         if not chans:
             return
         self.setup.si_channels.extend(chans)

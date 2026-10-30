@@ -118,6 +118,9 @@ class SISettings:
     em_end_db: float = -40.0
     em_threads: int = 0
     report_format: str = "html"
+    # Nets the user set, over their names: [positive, negative] pairs, single-ended nets.
+    manual_pairs: List[List[str]] = field(default_factory=list)
+    manual_single: List[str] = field(default_factory=list)
 
 
 def buffer_from_dict(d: Optional[dict]) -> Buffer:
