@@ -156,3 +156,81 @@ def test_solve_the_ticked_channels(app, no_3d, tmp_path):
         assert asked[-1] == [panel.cmb_channel.currentData()]
     finally:
         w.close()
+
+
+def test_reopen_saved_results(app, no_3d, tmp_path, monkeypatch):
+    """Save results… then Open results… in the panel brings the solved channel and the
+    Quick Scan back, shown as after the solve, without solving again."""
+    from qtpy.QtWidgets import QFileDialog
+    from kipi.gui.main_window import MainWindow
+    snap, setup = make_board(), make_setup()
+    w = MainWindow()
+    w._run = lambda fn, done, name, **k: done(fn(NULL))
+    saved = tmp_path / "board.kipi-si-results"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(saved), ""))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(saved), ""))
+    try:
+        w.snapshot, w._setup_path = snap, tmp_path / "board.kipi-setup.yml"
+        w.solve_panel.set_board(snap, setup)
+        w.findChild(QRadioButton, "mode_si").setChecked(True)
+        panel = w.si_panel
+        panel.set_board(snap, setup)
+        panel.btn_scan.click()
+        panel.cmb_channel.setCurrentIndex(panel.cmb_channel.findData("USB_P/USB_N"))
+        panel.btn_solve.click()
+        solved = panel.result
+        panel.btn_save.click()
+        assert saved.is_file()
+
+        panel.set_board(snap, setup)                      # forget the solve
+        assert panel.result is None and not panel.results()
+        assert panel.btn_open.isEnabled()
+        panel.btn_open.click()
+        r = panel.results()["USB_P/USB_N"]
+        assert r.status == solved.status and r.s.shape == solved.s.shape
+        assert panel.result is r and w.si_plot.result is r
+        assert panel.scan_result is not None
+        panel.set_busy(True)
+        assert not panel.btn_open.isEnabled()
+    finally:
+        w.close()
+
+
+def test_picking_another_channel_keeps_the_view(app, no_3d, tmp_path):
+    """A solve brings its plots to the front; picking another solved channel then leaves
+    the view in front (3D or the plots) and the panel's tab as they are."""
+    from qtpy.QtCore import Qt
+    from kipi.gui.main_window import MainWindow
+    snap, setup = make_board(), make_setup()
+    w = MainWindow()
+
+    def run(fn, done, name, on_partial=None):
+        out = fn(NULL)
+        for item in out:
+            on_partial(item)
+        done(out)
+    w._run = run
+    try:
+        w.snapshot, w._setup_path = snap, tmp_path / "board.kipi-setup.yml"
+        w.solve_panel.set_board(snap, setup)
+        w.findChild(QRadioButton, "mode_si").setChecked(True)
+        panel = w.si_panel
+        panel.set_board(snap, setup)
+        names = [c.name for c in setup.si_channels]
+        for i in range(len(names)):
+            panel.ch_list.lst.item(i).setCheckState(Qt.Checked)
+        panel.btn_solve.click()
+        assert set(panel.results()) == set(names)
+        assert w.views.currentWidget() is w.si_plot
+
+        for view in (w.viewer, w.si_plot):
+            w.views.setCurrentWidget(view)
+            panel.tabs.setCurrentWidget(panel.ch_list)
+            for name in names:
+                panel.cmb_channel.setCurrentIndex(panel.cmb_channel.findData(name))
+                assert panel.result is panel.results()[name]
+                assert w.si_plot.result is panel.result
+                assert w.views.currentWidget() is view
+                assert panel.tabs.currentWidget() is panel.ch_list
+    finally:
+        w.close()

@@ -614,6 +614,7 @@ class SIPanel(QWidget):
     focus_changed = Signal()                       # focus_nets() changed
     setup_changed = Signal()
     results_saved = Signal(str)
+    open_results_requested = Signal()              # reopen a saved .kipi-si-results
     report_requested = Signal(object, str)         # the shown ChannelResult, "html"/"pdf"
     reports_requested = Signal(object, str)        # ChannelResults for one report, format
     EM_TIP = ("Simulate the region around the via in openEMS (minutes) and compare its "
@@ -776,6 +777,10 @@ class SIPanel(QWidget):
         self.btn_save.setToolTip("Save every solved channel and the Quick Scan, to reopen "
                                  "without solving")
         self.btn_save.clicked.connect(self._save_results)
+        self.btn_open = QPushButton("Open results…")
+        self.btn_open.setToolTip("Reopen saved Signal Integrity results (.kipi-si-results) "
+                                 "for this board, without solving again")
+        self.btn_open.clicked.connect(self.open_results_requested)
         self.btn_spice = QPushButton("Export SPICE…")
         self.btn_spice.setToolTip("Fit the channel's S-parameters with a passive rational "
                                   "model and write it as a SPICE subcircuit (.lib)")
@@ -783,6 +788,7 @@ class SIPanel(QWidget):
         row.addWidget(self.btn_touchstone)
         row.addWidget(self.btn_spice)
         row.addWidget(self.btn_save)
+        row.addWidget(self.btn_open)
         row.addStretch(1)
         v.addLayout(row)
         box = QGroupBox("3D check (openEMS)")
@@ -1068,6 +1074,7 @@ class SIPanel(QWidget):
                                else self._solve_label())
         self.btn_solve.setEnabled(not busy and not self._errors())
         self.btn_scan.setEnabled(not busy)
+        self.btn_open.setEnabled(not busy)
         self.btn_em.setEnabled(not busy and self.result is not None and
                                self.cmb_via.count() > 0)
 
@@ -1271,13 +1278,15 @@ class SIPanel(QWidget):
         self.txt_notes.setHtml(f'<span style="color:#ff7070"><b>Cannot solve:</b><br>'
                                f'{html.escape(message).replace(chr(10), "<br>")}</span>')
 
-    def show_result(self, result):
+    def show_result(self, result, front: bool = True):
+        """A solved channel; ``front`` shows the Results tab if it is the one picked."""
         self._results[result.channel.name] = result
         self._failed.pop(result.channel.name, None)
         self.ch_list.set_status(result.channel.name, result.status)
         if result.channel.name == (self.cmb_channel.currentData() or ""):
             self._display(result)
-            self.tabs.setCurrentIndex(self.tabs.indexOf(self.tbl_checks.parentWidget()))
+            if front:
+                self.tabs.setCurrentIndex(self.tabs.indexOf(self.tbl_checks.parentWidget()))
         self._show_buttons()
 
     def _show_channel_result(self):

@@ -415,6 +415,7 @@ class MainWindow(QMainWindow):
         si.focus_changed.connect(self._update_focus)
         si.results_saved.connect(
             lambda path: self.log(f"Saved Signal Integrity results to {path}"))
+        si.open_results_requested.connect(self.open_results)
         for panel in (ac, noise, si):
             self._wire_panel(panel)
             self.setup_stack.addWidget(panel)
@@ -2412,11 +2413,16 @@ class MainWindow(QMainWindow):
 
         def partial(item):
             name, result, error = item
+            first = not shown
             shown.add(name)
             if result is None:
                 self.si_panel.show_error(error, name)
                 return
-            self.si_panel.show_result(result)
+            # The first result of the run brings its plots and checks to the front; later
+            # ones (several channels) leave the view as the user has it.
+            self.si_panel.show_result(result, front=first)
+            if first:
+                self._front_si_plot()
             if many:
                 self.log(f"{name}: {result.status}",
                          logging.INFO if result.status == "PASS" else logging.WARNING)
@@ -2503,8 +2509,12 @@ class MainWindow(QMainWindow):
         if result is None:
             self.si_plot.clear()
             return
+        # The view in front is left as it is: another channel picked in 3D stays in 3D.
         self.si_plot.set_result(result)
-        if self.mode == "si":
+
+    def _front_si_plot(self):
+        """A new solve (or opened results): show its plots."""
+        if self.mode == "si" and self.si_plot.result is not None:
             self.views.setCurrentWidget(self.si_plot)
 
     def _si_report(self, result, fmt: str):
@@ -2595,6 +2605,7 @@ class MainWindow(QMainWindow):
             self.log(f"Results are for {data['board']}, not {self.snapshot.board_name}",
                      logging.WARNING)
         left_out = self.si_panel.load_results(data["results"], data.get("scan"))
+        self._front_si_plot()
         if left_out:
             self.log(f"No channel in the setup named {', '.join(left_out)}; their results "
                      f"were left out", logging.WARNING)

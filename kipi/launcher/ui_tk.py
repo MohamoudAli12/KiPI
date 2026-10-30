@@ -11,10 +11,11 @@ import queue
 import sys
 import threading
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 from typing import Optional
 
-from kipi.launcher import deps
+from kipi.launcher import appearance, deps
 from kipi.launcher.install import Canceled
 from kipi.launcher.paths import KIPI_ROOT
 from kipi.launcher.setup_env import PARDISO_CONS, PARDISO_PROS, PARDISO_TITLE, Summary
@@ -52,7 +53,11 @@ class TkUI:
         # kipi.desktop by name. Raises TclError with no display: the caller falls back.
         self.root = tk.Tk(baseName="kipi", className="KiPI")
         self.root.title("KiPI setup")
-        self.root.minsize(560, 0)
+        self.theme = appearance.saved_theme()
+        self.colors = appearance.COLORS[self.theme]
+        self.scale = self._apply_scale()
+        self._apply_theme()
+        self.root.minsize(self.px(560), 0)
         self._set_icon()
         self._tagged = False
         self.root.protocol("WM_DELETE_WINDOW", self._close_clicked)
@@ -61,6 +66,78 @@ class TkUI:
         self.root.withdraw()
 
     # --- window plumbing ----------------------------------------------------------------
+    def px(self, n: float) -> int:
+        """``n`` pixels at 96 DPI, in this display's pixels."""
+        return int(round(n * self.scale))
+
+    def _apply_scale(self) -> float:
+        """Enlarge fonts for this display (see :mod:`kipi.launcher.appearance`); sizes
+        in pixels go through :meth:`px`."""
+        try:
+            scale = appearance.ui_scale(self.root.winfo_fpixels("1i"),
+                                        self.root.winfo_screenheight())
+        except Exception:  # noqa: BLE001 - cosmetic
+            return 1.0
+        if scale == 1.0:
+            return scale
+        # Fonts sized in points follow tk scaling; those sized in pixels (negative) do not.
+        self.root.tk.call("tk", "scaling", 96 * scale / 72)
+        for name in tkfont.names(self.root):
+            f = tkfont.nametofont(name, root=self.root)
+            size = int(f.cget("size"))
+            if size < 0:
+                f.configure(size=int(round(size * scale)))
+        return scale
+
+    def _apply_theme(self) -> None:
+        """Dark: ttk's clam theme in KiPI's dark colours, and the same colours for the
+        classic Tk widgets (the details text, and message boxes on Linux). Light: the
+        platform's own look."""
+        style = ttk.Style(self.root)
+        c = self.colors
+        if self.theme == appearance.DARK:
+            style.theme_use("clam")
+        style.configure("Dim.TLabel", foreground=c["dim"])
+        style.configure("Treeview", rowheight=self.px(20))
+        for name in ("TCheckbutton", "TRadiobutton"):    # a fixed few pixels otherwise
+            style.configure(name, indicatorsize=self.px(13), indicatordiameter=self.px(13))
+        if self.theme != appearance.DARK:
+            return
+        bg, base, fg = c["window"], c["base"], c["text"]
+        style.configure(".", background=bg, foreground=fg, fieldbackground=base,
+                        bordercolor=c["border"], darkcolor=bg, lightcolor=bg,
+                        troughcolor=base, selectbackground=c["accent"],
+                        selectforeground=c["accent_text"], insertcolor=fg,
+                        focuscolor=c["accent"])
+        style.map(".", foreground=[("disabled", c["disabled"])])
+        style.configure("TButton", background=c["button"], padding=(self.px(10), self.px(4)))
+        style.map("TButton", background=[("pressed", base), ("active", c["active"])])
+        style.configure("TCheckbutton", indicatorbackground=base, indicatorforeground=fg)
+        style.map("TCheckbutton", background=[("active", bg)],
+                  indicatorbackground=[("pressed", c["active"]), ("selected", c["accent"])],
+                  indicatorforeground=[("selected", c["accent_text"])])
+        style.configure("TLabelframe.Label", foreground=fg)
+        style.configure("Treeview", background=base, fieldbackground=base, foreground=fg)
+        style.map("Treeview", background=[("selected", c["accent"])],
+                  foreground=[("selected", c["accent_text"])])
+        style.configure("Treeview.Heading", background=c["button"], foreground=fg)
+        style.map("Treeview.Heading", background=[("active", c["active"])])
+        style.configure("TProgressbar", background=c["accent"], troughcolor=base,
+                        thickness=self.px(14))
+        style.configure("TScrollbar", background=c["button"], troughcolor=base,
+                        arrowcolor=fg, arrowsize=self.px(14))
+        style.map("TScrollbar", background=[("active", c["active"])])
+        self.root.configure(background=bg)
+        for pattern, value in (("*Background", bg), ("*Foreground", fg),
+                               ("*activeBackground", c["active"]),
+                               ("*activeForeground", fg), ("*highlightBackground", bg),
+                               ("*selectBackground", c["accent"]),
+                               ("*selectForeground", c["accent_text"]),
+                               ("*insertBackground", fg), ("*troughColor", base),
+                               ("*Text.Background", base), ("*Button.Background", c["button"]),
+                               ("*disabledForeground", c["disabled"])):
+            self.root.option_add(pattern, value)
+
     def _set_icon(self) -> None:
         """The KiPI icon in the title bar, taskbar, panel or Dock (macOS takes it from
         here too). Windows gets the .ico, with sizes made for it."""
@@ -96,7 +173,7 @@ class TkUI:
         """A fresh, empty page in the window."""
         if self.frame is not None:
             self.frame.destroy()
-        self.frame = ttk.Frame(self.root, padding=PAD)
+        self.frame = ttk.Frame(self.root, padding=self.px(PAD))
         self.frame.pack(fill="both", expand=True)
         return self.frame
 
@@ -116,7 +193,7 @@ class TkUI:
         self._on_close()
 
     def _label(self, parent, text, **kw) -> ttk.Label:
-        lb = ttk.Label(parent, text=text, wraplength=WRAP, justify="left", **kw)
+        lb = ttk.Label(parent, text=text, wraplength=self.px(WRAP), justify="left", **kw)
         lb.pack(anchor="w", fill="x")
         return lb
 
@@ -126,8 +203,8 @@ class TkUI:
         ttk.Label(page, text="Setting up KiPI", font=("TkDefaultFont", 12, "bold")).pack(
             anchor="w")
         self._label(page, text)
-        bar = ttk.Progressbar(page, mode="indeterminate", length=WRAP)
-        bar.pack(fill="x", pady=(PAD, 0))
+        bar = ttk.Progressbar(page, mode="indeterminate", length=self.px(WRAP))
+        bar.pack(fill="x", pady=(self.px(PAD), 0))
         bar.start(15)
         self._show()
 
@@ -151,22 +228,22 @@ class TkUI:
         self._label(page, f"KiPI needs to set up its own Python environment: {s.reason}. "
                           "Nothing is installed until you click Install.")
         self._label(page, f"Location: {s.env}\nPython {s.python.version_text}: "
-                          f"{s.python.executable}", foreground="gray25")
+                          f"{s.python.executable}", style="Dim.TLabel")
 
         # Every package, biggest first.
         source = s.source_line()
         ttk.Label(page, text="Packages to install" + (f" ({source})" if source else ""),
-                  font=("TkDefaultFont", 9, "bold"), wraplength=WRAP, justify="left").pack(
-            anchor="w", pady=(PAD, 2))
+                  font=("TkDefaultFont", 9, "bold"), wraplength=self.px(WRAP), justify="left").pack(
+            anchor="w", pady=(self.px(PAD), self.px(2)))
         box = ttk.Frame(page)
         box.pack(fill="both", expand=True)
         table = ttk.Treeview(box, columns=("version", "size"), height=10, selectmode="none")
         table.heading("#0", text="Package", anchor="w")
         table.heading("version", text="Version", anchor="w")
         table.heading("size", text="Download", anchor="e")
-        table.column("#0", width=260)
-        table.column("version", width=160)
-        table.column("size", width=110, anchor="e")
+        table.column("#0", width=self.px(260))
+        table.column("version", width=self.px(160))
+        table.column("size", width=self.px(110), anchor="e")
         scroll = ttk.Scrollbar(box, orient="vertical", command=table.yview)
         table.configure(yscrollcommand=scroll.set)
         table.pack(side="left", fill="both", expand=True)
@@ -175,23 +252,23 @@ class TkUI:
             table.insert("", "end", text=p.name,
                          values=(p.version, deps.fmt_size(p.size) if p.size else ""))
         total = ttk.Label(page, text="", font=("TkDefaultFont", 9, "bold"))
-        total.pack(anchor="w", pady=(4, 0))
+        total.pack(anchor="w", pady=(self.px(4), 0))
 
         # PARDISO, if it can be had here.
         pardiso = tk.BooleanVar(value=s.pardiso_offered and s.pardiso_default)
-        group = ttk.LabelFrame(page, text=PARDISO_TITLE, padding=PAD)
-        group.pack(fill="x", pady=(PAD, 0))
+        group = ttk.LabelFrame(page, text=PARDISO_TITLE, padding=self.px(PAD))
+        group.pack(fill="x", pady=(self.px(PAD), 0))
         if s.pardiso_offered:
             ttk.Checkbutton(group, text=f"Install PARDISO ({s.pardiso_line()})",
                             variable=pardiso, command=lambda: update()).pack(anchor="w")
             for mark, items in (("+", PARDISO_PROS), ("−", PARDISO_CONS)):
                 for item in items:
-                    ttk.Label(group, text=f"{mark}  {item}", wraplength=WRAP - 30,
-                              justify="left").pack(anchor="w", padx=(20, 0))
+                    ttk.Label(group, text=f"{mark}  {item}", wraplength=self.px(WRAP - 30),
+                              justify="left").pack(anchor="w", padx=(self.px(20), 0))
         else:
             ttk.Label(group, text=f"Not available here: {s.pardiso_why_not}. KiPI uses "
                                   "SciPy's solver, which handles every board.",
-                      wraplength=WRAP - 20, justify="left").pack(anchor="w")
+                      wraplength=self.px(WRAP - 20), justify="left").pack(anchor="w")
 
         def update():
             with_p = pardiso.get()
@@ -203,10 +280,10 @@ class TkUI:
             self.root.quit()
 
         buttons = ttk.Frame(page)
-        buttons.pack(fill="x", pady=(PAD, 0))
+        buttons.pack(fill="x", pady=(self.px(PAD), 0))
         ttk.Button(buttons, text="Cancel", command=lambda: done(None)).pack(side="right")
         install = ttk.Button(buttons, text="Install", command=lambda: done(pardiso.get()))
-        install.pack(side="right", padx=(0, 6))
+        install.pack(side="right", padx=(0, self.px(6)))
         install.focus_set()
         self.root.bind("<Return>", lambda e: done(pardiso.get()))
         self.root.bind("<Escape>", lambda e: done(None))
@@ -230,9 +307,9 @@ class TkUI:
                   font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
         self._label(page, "This takes a few minutes the first time. KiPI starts when it is "
                           "done.")
-        bar = ttk.Progressbar(page, mode="indeterminate", length=WRAP, maximum=1000)
-        bar.pack(fill="x", pady=(PAD, 4))
-        current = ttk.Label(page, text="", foreground="gray25", width=90)
+        bar = ttk.Progressbar(page, mode="indeterminate", length=self.px(WRAP), maximum=1000)
+        bar.pack(fill="x", pady=(self.px(PAD), self.px(4)))
+        current = ttk.Label(page, text="", style="Dim.TLabel", width=90)
         current.pack(anchor="w")
         details = tk.Text(page, height=12, width=90, wrap="none", font=("TkFixedFont", 8))
         shown = {"details": False}
@@ -240,12 +317,12 @@ class TkUI:
         def toggle():
             shown["details"] = not shown["details"]
             if shown["details"]:
-                details.pack(fill="both", expand=True, pady=(4, 0))
+                details.pack(fill="both", expand=True, pady=(self.px(4), 0))
             else:
                 details.pack_forget()
 
         buttons = ttk.Frame(page)
-        buttons.pack(side="bottom", fill="x", pady=(PAD, 0))
+        buttons.pack(side="bottom", fill="x", pady=(self.px(PAD), 0))
         cancel_btn = ttk.Button(buttons, text="Cancel")
         cancel_btn.pack(side="right")
         ttk.Button(buttons, text="Details", command=toggle).pack(side="left")

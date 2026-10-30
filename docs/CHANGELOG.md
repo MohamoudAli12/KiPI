@@ -70,7 +70,8 @@ milestones rather than versions that were ever set.
     bathtub curve, and PRBS eyes drawn as continuous traces, alike in the app and the
     report.
   - HTML and PDF reports (with the channel's Touchstone file), Touchstone export, a
-    passive SPICE macromodel by vector fitting, and saved results (`.kipi-si-results`).
+    passive SPICE macromodel by vector fitting, and saved results (`.kipi-si-results`),
+    reopened with **Open results…** beside **Save results…** (or File → Open results…).
 - **Dielectric loss tangents from the board's stackup.** KiCad boards' layer loss
   tangents are now read and kept with stackup edits; the SI mode uses them.
 - **Series links with more than two pins, from their SPICE models** (#193). Importing a
@@ -162,6 +163,11 @@ milestones rather than versions that were ever set.
   vias, zone copper, outline and DC solve match the board file's.
 
 ### Changed
+- **The launcher's setup window is dark, and sized for the display.** It follows KiPI's
+  Dark mode choice (dark unless you picked light), and on a high-resolution display it is
+  enlarged by the desktop's scale (`Xft.dpi`, `QT_FONT_DPI`, `QT_SCALE_FACTOR`,
+  `GDK_SCALE`, or Windows' display scaling), else by the screen's size: twice as large on
+  a 4K screen. `KIPI_UI_SCALE` sets the scale by hand.
 - **Diodes are biased by the DC solve.** An AC or Coupled Noise solve made after a DC
   solve takes each diode link's small-signal model at the current the DC solve found
   through it, the copper's own split, in place of the estimate from the loads beyond it
