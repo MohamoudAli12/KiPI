@@ -122,14 +122,15 @@ def _view():
            _coupling_actors=[], _coupling_bar=None, _coupling_title=None, _hot_loops=None,
            _hot_loop_actors=[], _fields=None, _field_actors=[], _field_bar=None,
            _field_title=None, _field_mesh=None, _field_arrows=None, _field_frame=0,
-           _field_timer=_Timer())
+           _field_timer=_Timer(), _end_labels=[], _end_actors=[])
     for name in ("set_pi_markers", "_draw_pi_markers", "_remove_pi_actors", "_apply_visibility", "set_zscale",
                  "set_feature_visible", "_place_models", "_selected_markers", "set_pi_selected",
                  "pi_marker_at", "_to_screen", "focus_on", "_start_blink", "_blink_step",
                  "_paint_selected", "set_coupling", "_remove_coupling_actors", "_coupling_to_focus",
                  "_draw_coupling", "set_hot_loops", "_remove_hot_loop_actors",
                  "_draw_hot_loops", "set_fields", "_remove_field_actors", "_draw_fields",
-                 "_field_arrow_mesh", "_field_step"):
+                 "_field_arrow_mesh", "_field_step", "set_end_labels", "_remove_end_actors",
+                 "_draw_end_labels"):
         setattr(v, name, MethodType(getattr(Viewer3D, name), v))
     return v
 
@@ -489,6 +490,32 @@ def test_the_hot_loops_are_drawn_in_their_colours():
     assert len(v._hot_loop_actors) == 6 and v._hot_loop_actors[0].GetScale()[2] == 2.0
     v.set_hot_loops(None)
     assert v._hot_loop_actors == [] and v._hot_loops is None
+
+
+def test_an_si_channel_s_ends_are_marked_tx_and_rx():
+    """The selected SI channel's Transmitter and Receiver: a label each, over the part,
+    hidden over results, kept through a height change, removed with an empty list."""
+    v = _view()
+    v.set_end_labels([("TX U1", (5.0, 5.0, 1.6)), ("RX U2", (55.0, 5.0, 1.6))])
+    names = [a.GetMapper().GetInputDataObject(0, 0).GetPointData()
+             .GetAbstractArray("names").GetValue(0) for a in v._end_actors]
+    assert names == ["TX U1", "RX U2"]
+    colors = [a.GetMapper().GetLabelTextProperty().GetBackgroundColor() for a in v._end_actors]
+    assert colors[0] != colors[1]                                  # TX and RX told apart
+    at = v._end_actors[1].GetMapper().GetInputDataObject(0, 0).GetPoint(0)
+    np.testing.assert_allclose(at, (55.0, -5.0, 1.6 + 1.0))       # KiCad's y down; lifted
+    first = v._end_actors[0]
+    v.set_end_labels([("TX U1", (5.0, 5.0, 1.6)), ("RX U2", (55.0, 5.0, 1.6))])
+    assert v._end_actors[0] is first                               # unchanged: not redrawn
+    v._result = object()
+    v._apply_visibility()
+    assert not any(a.GetVisibility() for a in v._end_actors)
+    v._result = None
+    v.set_zscale(2.0)
+    assert len(v._end_actors) == 2
+    assert v._end_actors[0].GetMapper().GetInputDataObject(0, 0).GetPoint(0)[2] == 3.2 + 1.0
+    v.set_end_labels([])
+    assert v._end_actors == []
 
 
 def test_a_field_slice_is_drawn_and_animated():

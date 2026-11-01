@@ -2700,8 +2700,9 @@ The table lists each net (pairs together: nets named <code>_P</code>/<code>_N</c
 <code>+</code>/<code>-</code>, <code>DP</code>/<code>DM</code> and the like) with its result
 (failing first), its impedance range, length, worst crosstalk coefficient and the aggressor,
 any length without a reference, its longest via stub and its pair skew. Select a net for
-each finding and where it is. With <b>Impedance in 3D</b>, the 3D view colors the scanned
-traces by how far their impedance is from target: blue below, red above.</p>
+each finding and where it is. With <b>Quick Scan impedance in 3D</b> (in Settings), the 3D
+view colors the scanned traces by how far their impedance is from target: blue below, red
+above.</p>
 <p>Targets: <b>Z0 target</b> for single-ended nets; for pairs, <b>Zdiff target</b>, or by
 name (USB 90 Ω, USB4 and PCIe 85 Ω, else 100 Ω): the net's own name first (PCIe's
 lane names, PETp0 or M2_PER3_N, count as PCIe), its sheet's only when that says nothing,
@@ -2783,8 +2784,7 @@ bidirectional bus, add it again with <b>Swap</b> to get the reads.</p>
   <tr><td>crosstalk</td><td class="wrap">each aggressor's NEXT and FEXT below −30 dB up to
     Nyquist</td></tr>
 </table>
-<p>Below them: the notes (ports, nets, anything assumed), <b>Impedance in 3D</b> for the
-channel's sections, <b>Report</b> (HTML or PDF, with the channel's Touchstone file in it),
+<p>Below them: the notes (ports, nets, anything assumed), <b>Report</b> (HTML or PDF, with the channel's Touchstone file in it),
 <b>Report several…</b> (one report of the solved channels you tick: a summary of them all,
 then each channel; in HTML a picker at its top shows one channel or all),
 <b>Export Touchstone…</b> (<code>.s2p</code> or <code>.s4p</code>, 50 Ω, ports at the dies),
@@ -2821,6 +2821,10 @@ models.</p>
     Nyquist (and at least three over the edge), the step small enough for 64 UI of
     response.</li>
   <li>The Quick Scan's targets and limits.</li>
+  <li><b>3D view</b>: <b>Quick Scan impedance in 3D</b> colors the scanned traces by their
+    impedance, <b>Solved channel's impedance in 3D</b> the shown result's line sections;
+    <b>TX and RX labels in 3D</b> marks the selected channel's Transmitter and
+    Receiver with their parts' names (<i>TX U1</i>, <i>RX J2</i>).</li>
 </ul>
 <p>The dielectrics' loss tangents come from the board's stackup where it has them, else the
 AC setup's loss tangent.</p>

@@ -4,6 +4,7 @@ Coupled Noise overlay (:class:`kipi.noise.viz.CouplingOverlay`, values in Ω her
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Optional, Sequence
 
 import numpy as np
@@ -87,3 +88,33 @@ def channel_overlay(snap, result) -> Optional[CouplingOverlay]:
         note += "; grey where a leg runs without its partner (no Zdiff)"
     return _overlay(f"{'Zdiff' if pair else 'Z0'} − {target:g} Ω", segs, vals, widths, spans,
                     LIMIT_OHM, note)
+
+
+def end_labels(snap, si, ch) -> list:
+    """Where a channel's Transmitter and Receiver are, for the 3D view: ``("TX U1", xyz)``
+    and ``("RX U2", xyz)`` over the middle of each part's pads on the channel's nets, on the
+    side the part sits. Empty when the ends can't be told (a net with no parts)."""
+    from kipi.dc.viz.markers import _pad_z, part_sides
+    from kipi.si.extract import follow_series
+    from kipi.si.model import not_fitted
+    from kipi.si.solver import ends
+    if snap is None or ch is None or not ch.net:
+        return []
+    skip = not_fitted(snap, si, ch)
+    nets = [n for x in (ch.net, ch.partner) if x
+            for n in (follow_series(snap, x, not_fitted=skip) if ch.follow_series else [x])]
+    try:
+        refs = ends(snap, dataclasses.replace(ch, not_fitted=skip), nets)
+    except Exception:  # noqa: BLE001 (no ends to show; Solve says why)
+        return []
+    sides = part_sides(snap)
+    out = []
+    for text, ref in zip(("TX", "RX"), refs):
+        pads = [p for n in nets for p in snap.items_on_net(n)[2] if p.footprint == ref]
+        if not pads:
+            continue
+        side = sides.get(ref, "top")
+        zs = [_pad_z(snap, p, side) for p in pads]
+        xy = np.mean([p.position for p in pads], axis=0)
+        out.append((f"{text} {ref}", np.array([xy[0], xy[1], min(zs) if side == "bottom" else max(zs)])))
+    return out

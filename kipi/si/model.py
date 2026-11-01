@@ -112,6 +112,11 @@ class SISettings:
     scan_nets: str = "all"               # "all" signals, or "scope": the nets ticked
     scan_slow: bool = False              # "all" also takes the slow control nets
     report_format: str = "html"
+    # The 3D view: the Quick Scan's and a solved channel's impedance along the traces, the
+    # channel's TX and RX.
+    scan_3d: bool = True
+    result_3d: bool = True
+    end_labels_3d: bool = True
     # Nets the user set, over their names: [positive, negative] pairs, single-ended nets.
     manual_pairs: List[List[str]] = field(default_factory=list)
     manual_single: List[str] = field(default_factory=list)

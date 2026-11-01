@@ -1728,13 +1728,16 @@ class MainWindow(QMainWindow):
 
     def _update_focus(self):
         """The nets picked out in 3D: those selected in the Nets list, else in SI mode the
-        selected Quick Scan net or channel (with its aggressors)."""
+        selected Quick Scan net or channel (with its aggressors); in SI mode, the selected
+        channel's TX and RX marked."""
         if self._closed:
             return
         nets = [it.data(Qt.UserRole) for it in self.net_list.selectedItems()]
-        if not nets and self.mode == "si" and self._si_panel is not None:
+        si = self.mode == "si" and self._si_panel is not None
+        if not nets and si:
             nets = self._si_panel.focus_nets()
         self.viewer.set_focus_nets(nets)
+        self.viewer.set_end_labels(self._si_panel.end_labels() if si else [])
 
     def _on_layer_item_changed(self, item):
         self.viewer.set_layer_visible(item.data(Qt.UserRole), item.checkState() == Qt.Checked)
@@ -1842,6 +1845,7 @@ class MainWindow(QMainWindow):
         self.viewer.set_pi_markers(markers)
         if self.mode in ("noise", "si"):
             self._show_coupling(front=False)  # a new board's view starts without it
+            self._update_focus()              # nor the SI channel's TX and RX
 
     def _show_coupling(self, front: bool = True):
         """Draw the Coupled Noise victim's coupling picked in its results in the 3D view

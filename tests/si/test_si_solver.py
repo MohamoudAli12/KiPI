@@ -101,6 +101,24 @@ def test_a_pairs_overlay_covers_its_whole_route(board):
     assert (ov.z_spans[:, 1] > ov.z_spans[:, 0]).all()
 
 
+def test_the_ends_are_marked_where_the_parts_are(board):
+    """TX over the driving part's pads on the channel's nets, RX over the receiving part's,
+    each a set end or the solver's guess; swapped ends swap the labels; none with no net."""
+    from kipi.si.viz import end_labels
+    ch = new_channel("CLK")
+    labels = end_labels(board, PISetup().si, ch)
+    assert [t for t, _ in labels] == ["TX U1", "RX U2"]
+    pads = {r: [p for n in ("CLK", "CLK_R") for p in board.items_on_net(n)[2]
+                if p.footprint == r] for r in ("U1", "U2")}
+    for (_t, xyz), ref in zip(labels, ("U1", "U2")):
+        assert np.allclose(xyz[:2], np.mean([p.position for p in pads[ref]], axis=0))
+    ch.driver_ref, ch.receiver_ref = "U2", "U1"
+    swapped = end_labels(board, PISetup().si, ch)
+    assert [t for t, _ in swapped] == ["TX U2", "RX U1"]
+    assert np.allclose(swapped[0][1], labels[1][1]) and np.allclose(swapped[1][1], labels[0][1])
+    assert end_labels(board, PISetup().si, new_channel("")) == []
+
+
 def test_tdr_note_names_a_source_termination():
     """The demo's CLK_GOOD: R1 (33 Ω) 2.5 mm from U1, so the TDR from U1 reads Z0 + 33 Ω
     from ~31 ps; a channel with no series resistor gets no note."""

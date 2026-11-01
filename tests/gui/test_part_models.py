@@ -42,7 +42,8 @@ def _view(zscale=1.0):
            _coating_actors=[], _show_mask=False, _show_silk=False,
            _show_mask_result=False, _show_silk_result=False, _coupling_actors=[],
            _coupling_bar=None, _coupling_title=None, _hot_loop_actors=[], _hot_loops=None,
-           _fields=None, _field_actors=[], _field_bar=None, _field_title=None)
+           _fields=None, _field_actors=[], _field_bar=None, _field_title=None,
+           _end_labels=[], _end_actors=[])
     for name in ("set_models", "_remove_model_actors", "_place_models", "_apply_visibility",
                  "set_zscale"):
         setattr(v, name, MethodType(getattr(Viewer3D, name), v))

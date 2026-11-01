@@ -63,6 +63,10 @@ _COUPLING_DOT_PX = 18
 # way the current flows, and the capacitor's name at the capacitor.
 _HOT_LOOP_PX = 4
 _HOT_LOOP_CONE_MM = (0.9, 0.3)                  # length, radius
+# Signal Integrity's channel ends: the Transmitter's and Receiver's label colors, larger
+# than the parts' names so they are found at a glance.
+_END_COLORS = {"TX": (0.80, 0.10, 0.10), "RX": (0.05, 0.45, 0.80)}
+_END_FONT_PX = 18
 # Coupled Noise's field slice (#146): its opacity, the arrows' spacing (grid points) and
 # length as a share of that spacing, and their colour.
 _FIELD_OPACITY = 0.85
@@ -376,6 +380,8 @@ class Viewer3D(QWidget):
         self._coupling_actors: List[object] = []
         self._coupling_bar: Optional[str] = None
         self._coupling_title = None
+        self._end_labels: list = []         # SI's selected channel's TX and RX
+        self._end_actors: List[object] = []
         self._hot_loops = None              # Coupled Noise's hot loops (#178), likewise
         self._hot_loop_actors: List[object] = []
         self._fields = None                 # Coupled Noise's field slice (#146), likewise
@@ -419,6 +425,8 @@ class Viewer3D(QWidget):
         self._coupling = None
         self._remove_hot_loop_actors()
         self._hot_loops = None
+        self._remove_end_actors()
+        self._end_labels = []
         p.clear_actors()
         self._remove_pi_actors()
         self._pi_markers = []
@@ -681,6 +689,35 @@ class Viewer3D(QWidget):
             self._coupling_bar = ov.title
             self._coupling_title = _bar_title_actor(ov.title)
             p.renderer.AddViewProp(self._coupling_title)
+
+    # ------------------------------------------------------- SI channel ends
+    def set_end_labels(self, labels):
+        """Mark a Signal Integrity channel's ends: ``(text, xyz)`` each, text "TX" or
+        "RX" and the part's name ("TX U1"), xyz in KiCad's mm; empty to remove them. Shown
+        over the copper only."""
+        labels = [(t, np.asarray(xyz, float)) for t, xyz in labels]
+        if len(labels) == len(self._end_labels) and all(
+                a[0] == b[0] and np.array_equal(a[1], b[1])
+                for a, b in zip(labels, self._end_labels)):
+            return
+        self._end_labels = labels
+        self._draw_end_labels()
+        self._apply_visibility()
+
+    def _remove_end_actors(self):
+        for a in self._end_actors:
+            self.plotter.renderer.RemoveViewProp(a)
+        self._end_actors = []
+
+    def _draw_end_labels(self):
+        self._remove_end_actors()
+        for text, xyz in self._end_labels:
+            at = np.array([[xyz[0], -xyz[1], xyz[2] * self._zscale + _PI_LABEL_LIFT_MM]])
+            actor = _pi_labels_actor(at, [text], _END_COLORS.get(text.split()[0], _PI_SELECTED_COLORS[1]))
+            actor.GetMapper().GetLabelTextProperty().SetFontSize(_END_FONT_PX)
+            actor.GetMapper().GetLabelTextProperty().SetBackgroundOpacity(0.9)
+            self.plotter.renderer.AddViewProp(actor)
+            self._end_actors.append(actor)
 
     # ------------------------------------------------------- hot loops (#178)
     def set_hot_loops(self, overlay):
@@ -1147,6 +1184,8 @@ class Viewer3D(QWidget):
             a.SetVisibility(not showing_result)
         for a in self._hot_loop_actors:
             a.SetVisibility(not showing_result)
+        for a in self._end_actors:
+            a.SetVisibility(not showing_result)
         for a in self._field_actors:
             a.SetVisibility(not showing_result)
         if self._coupling_bar in self.plotter.scalar_bars:
@@ -1180,6 +1219,9 @@ class Viewer3D(QWidget):
         if self._hot_loops is not None:       # its labels sit at a height in view units
             self._remove_hot_loop_actors()
             self._draw_hot_loops(self._hot_loops)
+        if self._end_labels:                  # likewise
+            self._draw_end_labels()
+            self._apply_visibility()
         self._place_models()
         if self._pi_markers:
             self._draw_pi_markers()

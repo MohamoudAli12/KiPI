@@ -100,6 +100,9 @@ def test_a_result_shows_its_checks_and_plots(app, panel, solved):
     assert panel.tbl_checks.rowCount() == len(result.checks)
     ov = panel.overlay()
     assert ov is not None and len(ov.segments) > 0
+    panel.chk_res_3d.setChecked(False)          # Settings' "Solved channel's impedance"
+    assert panel.overlay() is None
+    panel.chk_res_3d.setChecked(True)           # the module's setup, as it was
     plot = SIPlot()
     plot.set_result(result)
     for key, _ in VIEWS:
@@ -206,6 +209,44 @@ def test_results_round_trip(solved, tmp_path):
     assert len(d["scan"].nets) == len(sc.nets)
     s4p = report.export_touchstone(tmp_path / "c", r)
     assert s4p.suffix == ".s4p" and "Port[4]" in s4p.read_text()
+
+
+def test_the_3d_view_settings(panel, solved):
+    """Settings' 3D view: the Quick Scan's and a result's impedance and the channel's TX
+    and RX labels,
+    each stored in the setup, redrawing the view, and loaded with the board."""
+    from kipi.si.model import settings_from_dict
+    _, _, _, sc = solved
+    panel.show_scan(sc)
+    redraws = []
+    panel.overlay_changed.connect(lambda: redraws.append("overlay"))
+    panel.focus_changed.connect(lambda: redraws.append("focus"))
+    assert panel.chk_scan_3d.isChecked() and panel.overlay() is not None
+    panel.chk_scan_3d.setChecked(False)
+    assert not panel.setup.si.scan_3d and panel.overlay() is None and "overlay" in redraws
+
+    ch = new_channel("CLK")
+    ch.name = "CLK"
+    panel.setup.si_channels.append(ch)
+    panel.ch_list.reload()
+    panel.tabs.setCurrentWidget(panel.ch_list)
+    assert panel.ch_list.select_name("CLK")
+    assert [t for t, _ in panel.end_labels()] == ["TX U1", "RX U2"]
+    redraws.clear()
+    panel.chk_end_labels.setChecked(False)
+    assert not panel.setup.si.end_labels_3d and panel.end_labels() == [] and "focus" in redraws
+
+    panel.chk_res_3d.setChecked(False)
+    assert not panel.setup.si.result_3d
+
+    import dataclasses
+    back = settings_from_dict(dataclasses.asdict(panel.setup.si))
+    assert (back.scan_3d, back.result_3d, back.end_labels_3d) == (False, False, False)
+    setup = PISetup()
+    setup.si = back
+    panel.set_board(make_board(), setup)
+    assert not any(c.isChecked() for c in (panel.chk_scan_3d, panel.chk_res_3d,
+                                           panel.chk_end_labels))
 
 
 def test_solve_is_under_the_channel_settings(panel):

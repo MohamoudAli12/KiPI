@@ -685,6 +685,7 @@ class SIPanel(QWidget):
         self.tabs.currentChanged.connect(lambda _i: self.overlay_changed.emit())
         self.tabs.currentChanged.connect(lambda _i: self.focus_changed.emit())
         self.ch_list.selected.connect(lambda *_a: self.focus_changed.emit())
+        self.ch_list.changed.connect(self.focus_changed.emit)    # its ends or nets edited
         self.tbl_scan.itemSelectionChanged.connect(self.focus_changed.emit)
         self.result_selected.connect(lambda _r: self.focus_changed.emit())
         self.setEnabled(False)
@@ -724,12 +725,6 @@ class SIPanel(QWidget):
         self.tbl_scan.itemSelectionChanged.connect(self._scan_selected)
         v.addWidget(self.tbl_scan, 2)
         row = QHBoxLayout()
-        self.chk_scan_3d = QCheckBox("Impedance in 3D")
-        self.chk_scan_3d.setToolTip("Colour the scanned traces in the 3D view by their "
-                                    "impedance's distance from the target")
-        self.chk_scan_3d.setChecked(True)
-        self.chk_scan_3d.toggled.connect(lambda _on: self.overlay_changed.emit())
-        row.addWidget(self.chk_scan_3d)
         row.addStretch(1)
         self.btn_to_channel = QPushButton("Make a channel")
         self.btn_to_channel.setToolTip("Add the selected net (and its pair) as a channel, "
@@ -757,12 +752,6 @@ class SIPanel(QWidget):
         self.tbl_checks.horizontalHeader().setStretchLastSection(True)
         self.tbl_checks.setWordWrap(True)
         v.addWidget(self.tbl_checks, 2)
-        self.chk_res_3d = QCheckBox("Impedance in 3D")
-        self.chk_res_3d.setToolTip("Colour the channel's line sections in the 3D view by "
-                                   "their impedance's distance from the target")
-        self.chk_res_3d.setChecked(True)
-        self.chk_res_3d.toggled.connect(lambda _on: self.overlay_changed.emit())
-        v.addWidget(self.chk_res_3d)
         self.txt_notes = QTextBrowser()
         v.addWidget(self.txt_notes, 1)
         row = QHBoxLayout()
@@ -865,6 +854,22 @@ class SIPanel(QWidget):
         spin("skew_limit_mm", "Pair skew limit", 0, 50, 2, " mm")
         spin("stitch_radius_mm", "Return via radius", 0, 20, 2, " mm",
              tip="A ground via this near a layer change carries its return current")
+        f.addRow(QLabel("<b>3D view</b>"))
+        self.chk_scan_3d = QCheckBox("Quick Scan impedance in 3D")
+        self.chk_scan_3d.setToolTip("Colour the scanned traces in the 3D view by their "
+                                    "impedance's distance from the target")
+        self.chk_scan_3d.toggled.connect(lambda on: self._setting_3d("scan_3d", on))
+        f.addRow(self.chk_scan_3d)
+        self.chk_res_3d = QCheckBox("Solved channel's impedance in 3D")
+        self.chk_res_3d.setToolTip("Colour the shown result's line sections in the 3D view by "
+                                   "their impedance's distance from the target")
+        self.chk_res_3d.toggled.connect(lambda on: self._setting_3d("result_3d", on))
+        f.addRow(self.chk_res_3d)
+        self.chk_end_labels = QCheckBox("TX and RX labels in 3D")
+        self.chk_end_labels.setToolTip("Mark the selected channel's Transmitter and Receiver "
+                                       "in the 3D view, with their parts' names")
+        self.chk_end_labels.toggled.connect(lambda on: self._setting_3d("end_labels_3d", on))
+        f.addRow(self.chk_end_labels)
         return w
 
     # ------------------------------------------------------------------ data
@@ -919,10 +924,21 @@ class SIPanel(QWidget):
         self.chk_slow.setEnabled(s.scan_nets == "all")
         self.chk_slow.blockSignals(False)
         self.report_option.set_value(s.report_format)
+        for chk, on in ((self.chk_scan_3d, s.scan_3d), (self.chk_res_3d, s.result_3d),
+                        (self.chk_end_labels, s.end_labels_3d)):
+            chk.blockSignals(True)
+            chk.setChecked(on)
+            chk.blockSignals(False)
 
     def _setting(self, attr, value):
         setattr(self.setup.si, attr, value)
         self.setup_changed.emit()
+
+    def _setting_3d(self, attr, on: bool):
+        """A 3D view setting: stored, and the view redrawn."""
+        self._setting(attr, bool(on))
+        self.overlay_changed.emit()
+        self.focus_changed.emit()
 
     def _fill_variants(self):
         """The builds: the board's own DNP, then each KiCad 10 assembly variant."""
@@ -1381,24 +1397,34 @@ class SIPanel(QWidget):
         from kipi.si.viz import channel_overlay, scan_overlay
         on_results = self.tabs.currentWidget() is self.tbl_checks.parentWidget()
         if self.result is not None and (on_results or self.scan_result is None) \
-                and self.chk_res_3d.isChecked():
+                and self.setup.si.result_3d:
             return channel_overlay(self.snapshot, self.result)
-        if self.scan_result is not None and self.chk_scan_3d.isChecked():
+        if self.scan_result is not None and self.setup.si.scan_3d:
             return scan_overlay(self.snapshot, self.scan_result, self.selected_scan_nets())
         return None
+
+    def _focus_channel(self) -> Optional[Channel]:
+        """The channel the 3D view picks out: the one being edited, or the shown result's."""
+        tab = self.tabs.currentWidget()
+        if tab is self.ch_list:
+            return self.ch_list.current()
+        if tab is self.tbl_checks.parentWidget() and self.result is not None:
+            return self.result.channel
+        return None
+
+    def end_labels(self) -> list:
+        """The picked-out channel's TX and RX, to mark in 3D (:func:`kipi.si.viz.end_labels`)."""
+        from kipi.si.viz import end_labels
+        if not self.setup.si.end_labels_3d:
+            return []
+        return end_labels(self.snapshot, self.setup.si, self._focus_channel())
 
     def focus_nets(self) -> List[str]:
         """The nets to pick out in 3D: the Quick Scan's selected net, the channel being
         edited, or the shown result's channel, as the tab open; with its aggressors."""
-        tab = self.tabs.currentWidget()
-        if tab is self.ch_list:
-            ch = self.ch_list.current()
-        elif tab is self.tbl_checks.parentWidget() and self.result is not None:
-            ch = self.result.channel
-        elif tab is self.tbl_scan.parentWidget():
+        if self.tabs.currentWidget() is self.tbl_scan.parentWidget():
             return self.selected_scan_nets() or []
-        else:
-            return []
+        ch = self._focus_channel()
         if ch is None or not ch.net:
             return []
         nets = [n for n in (ch.net, ch.partner) if n]
