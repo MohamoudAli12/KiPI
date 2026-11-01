@@ -193,6 +193,21 @@ ol.steps > li { margin-bottom: 6px; }
     <li><a href="#noise-results">Waveforms and parasitics</a></li>
     <li class="group">Signal Integrity analysis</li>
     <li><a href="#si-concepts">Signal Integrity concepts</a></li>
+    <li><a href="#si-primer">Reading SI results: good and bad</a>
+      <ol>
+        <li><a href="#si-basics">The basics</a></li>
+        <li><a href="#si-tdr">Impedance (TDR)</a></li>
+        <li><a href="#si-sparams-primer">S-parameters</a></li>
+        <li><a href="#si-xtalk-primer">Crosstalk</a></li>
+        <li><a href="#si-pulse-primer">Pulse response and ISI</a></li>
+        <li><a href="#si-eye-primer">The eye diagram</a></li>
+        <li><a href="#si-ber-primer">BER and bathtubs</a></li>
+        <li><a href="#si-eq-primer">Equalisation</a></li>
+        <li><a href="#si-com-primer">COM</a></li>
+        <li><a href="#si-skew-primer">Pair skew</a></li>
+        <li><a href="#si-waves-primer">Waveforms</a></li>
+        <li><a href="#si-cheatsheet">Cheat sheet</a></li>
+      </ol></li>
     <li><a href="#si-setup">Signal Integrity setup tabs</a>
       <ol>
         <li><a href="#si-scan">Quick Scan</a></li>
@@ -201,7 +216,6 @@ ol.steps > li { margin-bottom: 6px; }
         <li><a href="#si-settings">Settings</a></li>
       </ol></li>
     <li><a href="#si-plots">SI plots</a></li>
-    <li><a href="#si-3d">3D check with openEMS</a></li>
     <li class="group">Workflows</li>
     <li><a href="#workflows">Step-by-step workflows</a></li>
     <li class="group">Reference</li>
@@ -257,7 +271,7 @@ and AC solvers work.</p>
     crosstalk and stubs right, and does a channel's eye open at its interface's rate?</td><td
     class="wrap">A Quick Scan of every signal net; for a channel, S-parameters, TDR, eyes
     with equalisation, COM, waveforms with IBIS or generic buffers, PASS/FAIL, Touchstone
-    and an optional openEMS 3D check.</td></tr>
+    and SPICE export.</td></tr>
 </table>
 <p>KiPI infers nothing about your power system from the schematic. You tell it where the
 regulators are, what each load draws, which parts sit in series between nets, and (for AC)
@@ -2310,8 +2324,350 @@ buffers' own (IBIS or generic) I-V and switching curves at the ports through the
 S-parameters, for overshoot, ringback and edge shape.</p>
 <div class="callout warn"><b>Accuracy:</b> the cross-sections agree with closed forms within
 about 2 % (microstrip and stripline impedance) and their loss with Wheeler's rule within
-about 3 %. Vias and discontinuities are approximations; the <a href="#si-3d">3D check</a>
-compares one with a full-wave solve.</div>
+about 3 %. Vias and discontinuities are approximations.</div>
+
+<h2 id="si-primer">Reading SI results: what good and bad look like</h2>
+<p class="lead">A plain-language guide to every Signal Integrity result KiPI shows: what it
+means, how to read it, and what a good and a bad channel look like. The plots are KiPI's own,
+from the example board <code>examples/si_demo</code>, which has a deliberately good and a
+deliberately bad version of each kind of channel.</p>
+
+<div class="callout tip"><b>The short version.</b> A signal is good when it reaches the
+receiver tall enough (eye height), at the right time (eye width), and without ringing. It
+loses height to <b>loss</b> (the trace soaks up energy), to <b>reflections</b> (impedance
+changes bounce part of it back) and to <b>crosstalk</b> (neighbours leak into it). Every
+plot below shows one of these three, from a different angle.</div>
+
+<h3 id="si-basics">The basics in six ideas</h3>
+<ol>
+  <li><b>A fast signal is a wave, not a voltage.</b> When an edge rises in less time than it
+    takes to travel the trace, the trace stops acting like a wire and behaves as a
+    <i>transmission line</i>. On FR-4 a signal travels about 15 cm per nanosecond, so a
+    100 ps edge is only 1.5 cm long: almost every trace on a modern board is a transmission
+    line for it.</li>
+  <li><b>Impedance is what the wave "feels".</b> A trace's <b>characteristic impedance</b>
+    (Z0, or Zdiff for a pair) is set by its width, its height above the reference plane and
+    the dielectric. Typical targets: 50 Ω single-ended; 85 Ω (PCIe), 90 Ω (USB) or 100 Ω
+    (Ethernet, LVDS, HDMI) differential.</li>
+  <li><b>Every impedance change reflects part of the wave.</b> The reflected share is
+    (Z₂ − Z₁)/(Z₂ + Z₁): a 10 % change reflects about 5 % of the signal back. Vias, pads,
+    connectors, a trace that narrows, or a gap in the plane underneath all change the
+    impedance. The reflection travels back, bounces again, and lands on later bits.</li>
+  <li><b>Traces lose energy, more at high frequency.</b> Copper resistance (worse at high
+    frequency because of skin effect and surface roughness) and the dielectric both absorb
+    energy. Losing high frequencies rounds the edges, so each bit smears into the next.</li>
+  <li><b>Neighbours couple.</b> Two traces side by side share electric and magnetic fields,
+    so a switching neighbour (the <i>aggressor</i>) induces noise on the trace you care about
+    (the <i>victim</i>). It grows as they get closer and the parallel run gets longer.</li>
+  <li><b>A differential pair carries the signal as a difference.</b> P and N swing in
+    opposite directions and the receiver reads P − N. Noise that hits both equally (common
+    mode) cancels. That only works if the two legs are matched: same length, same
+    impedance, same surroundings.</li>
+</ol>
+<table>
+  <tr><th>Term</th><th>What it means</th><th>Example</th></tr>
+  <tr><td>Bit rate, UI</td><td class="wrap">Bits per second, and the <b>unit interval</b>: the
+    time of one bit (1 / bit rate). Eye widths and skew are measured in UI.</td>
+    <td class="wrap">PCIe Gen 3: 8 Gb/s, UI = 125 ps</td></tr>
+  <tr><td>Nyquist frequency</td><td class="wrap">Half the bit rate: the frequency of a
+    1010… pattern, and where loss is usually judged.</td><td class="wrap">8 Gb/s → 4 GHz</td></tr>
+  <tr><td>Rise time</td><td class="wrap">How long an edge takes from 20 % to 80 % (or 10–90 %).
+    Faster edges carry higher frequencies and see more reflections.</td>
+    <td class="wrap">40 ps (PCIe), 300 ps (USB 2)</td></tr>
+  <tr><td>dB</td><td class="wrap">A log ratio. For signal voltages: −6 dB is half,
+    −20 dB is a tenth, −40 dB is a hundredth. Closer to 0 dB means more of the signal.</td>
+    <td class="wrap">−3 dB ≈ 71 % of the voltage gets through</td></tr>
+  <tr><td>BER</td><td class="wrap">Bit error ratio: the share of bits read wrongly.</td>
+    <td class="wrap">10<sup>−12</sup>: one error in a million million bits</td></tr>
+</table>
+
+<h3 id="si-tdr">Impedance (TDR)</h3>
+<p><b>What it is.</b> TDR (time-domain reflectometry) sends a fast edge into the channel and
+watches what comes back. Each reflection is turned into the impedance at that point, so the
+plot is an <b>impedance map along the route</b>. The x axis is time, and time is distance:
+a feature at 200 ps is about 1.5 cm in (200 ps is the round trip, there and back).</p>
+<p><b>How to read it.</b> Flat inside the green band (the target ±10 %) is good. Up means
+too much impedance (too little capacitance: a narrow trace, a gap in the plane, a missing
+return via), down means too little (too much capacitance: a wide pad, a via barrel, a
+connector). A short blip is a short feature; a long shelf is a long stretch of wrong
+trace.</p>
+<figure><img src="images/si_tdr_shapes.png" alt="Four sketches of TDR shapes: a flat line, a dip, a bump, and open, short and terminated ends">
+<figcaption>Illustration: the shapes to look for.</figcaption></figure>
+<div class="pair">
+<figure><img src="images/si_tdr_good.png" alt="A TDR that stays near 87 ohms inside the target band">
+<figcaption><span class="pass">Good</span>: PCIe TX0 sits at 87 Ω, inside 85 Ω ± 10 %, for
+most of its length. The short bump at the start and the dip near 720 ps are local features
+(the driver's end and a discontinuity near the receiver); the level after 800 ps is the
+receiver's termination.</figcaption></figure>
+<figure><img src="images/si_tdr_bad.png" alt="A TDR that runs at 110 to 140 ohms, far above the target band">
+<figcaption><span class="fail">Bad</span>: PCIe TX1 runs at 110–120 Ω the whole way, above
+the band, with a 140 Ω spike at the start and dips at its discontinuities. KiPI flags it:
+<i>Zdiff 110–167 Ω, off over 49.8 of 60.6 mm</i>.</figcaption></figure>
+</div>
+<table>
+  <tr><th></th><th>Good</th><th>Borderline (WARN)</th><th>Bad (FAIL)</th></tr>
+  <tr><td>Impedance check</td><td class="wrap">Every section within the target ±10 %</td>
+    <td class="wrap">Off target over less than 10 % of the route</td>
+    <td class="wrap">Off target over 10 % of the route or more</td></tr>
+</table>
+<p><b>Usual fixes.</b> Off over the whole route: the trace width or pair spacing is wrong for
+the stackup (KiPI's Quick Scan suggests a width). A bump in one place: look there for a
+gap in the plane, a layer change with no return via, or a neck-down. A dip: a large pad,
+a via or a connector; shrink the pad or add an anti-pad.</p>
+
+<h3 id="si-sparams-primer">S-parameters: insertion loss, return loss, mode conversion</h3>
+<p><b>What they are.</b> S-parameters describe the channel frequency by frequency: of a sine
+wave sent in, how much gets through, how much comes back, and how much leaks elsewhere.
+They are the frequency view of the same channel the TDR shows in time.</p>
+<ul>
+  <li><b>Insertion loss</b> (Sdd21, or S21 single-ended): how much gets through. It starts
+    at 0 dB and falls with frequency. A smooth gentle slope is normal; what matters is the
+    value at <b>Nyquist</b> (the dotted line) against the interface's limit (the triangle).
+    Dips and ripples in it mean reflections or resonances.</li>
+  <li><b>Return loss</b> (Sdd11, or S11): how much comes back. <b>Lower is better</b>: −20 dB
+    means only 10 % of the voltage reflects. The dotted line is the limit up to Nyquist.</li>
+  <li><b>Mode conversion</b> (Scd21, pairs only): how much of the differential signal turns
+    into common-mode noise because P and N are not matched. Lower is better.</li>
+</ul>
+<div class="pair">
+<figure><img src="images/si_sparams_good.png" alt="Smooth insertion loss reaching about -6 dB at 16 GHz, mode conversion below -65 dB">
+<figcaption><span class="pass">Good</span> loss, smooth: the good PCIe pair at 32 Gb/s loses
+6 dB at its 16 GHz Nyquist, and its mode conversion stays below −65 dB.</figcaption></figure>
+<figure><img src="images/si_sparams_bad.png" alt="Rippling insertion loss reaching -15 dB at 16 GHz with deep notches; mode conversion near -20 dB">
+<figcaption><span class="fail">Bad</span>: the bad pair loses 15 dB at the same frequency, with
+notches (resonances from its reflections), and mode conversion up at −20 dB from its
+unmatched legs.</figcaption></figure>
+</div>
+<table>
+  <tr><th>Check</th><th>Good (PASS)</th><th>Borderline (WARN)</th><th>Bad (FAIL)</th></tr>
+  <tr><td>Insertion loss at Nyquist</td><td class="wrap">Above the interface's limit (less
+    negative)</td><td class="wrap">Up to 3 dB beyond it</td><td class="wrap">More than 3 dB
+    beyond it</td></tr>
+  <tr><td>Return loss up to Nyquist</td><td class="wrap">Below the limit everywhere</td>
+    <td class="wrap">Up to 3 dB above it</td><td class="wrap">More than 3 dB above it</td></tr>
+  <tr><td>Mode conversion up to Nyquist</td><td>Below −25 dB</td><td>−25 to −15 dB</td>
+    <td>Above −15 dB</td></tr>
+</table>
+<p><b>Usual fixes.</b> Too much loss: shorten the route, use a lower-loss laminate or
+smoother copper, or widen the traces (at the same impedance). Poor return loss: fix the
+impedance changes the TDR shows. Mode conversion: match P and N (length, vias, symmetric
+breakouts).</p>
+
+<h3 id="si-xtalk-primer">Crosstalk (NEXT and FEXT)</h3>
+<p><b>What it is.</b> The share of an aggressor's signal that appears on the victim, in dB.
+<b>NEXT</b> (near-end) is measured at the victim's driver end, <b>FEXT</b> (far-end) at its
+receiver end. Add the neighbouring nets as <b>Aggressors</b> in a channel to see it.
+<b>More negative is better</b>: −40 dB is 1 % of the aggressor's swing; −20 dB is 10 %.</p>
+<div class="pair">
+<figure><img src="images/si_xtalk_good.png" alt="Near-end crosstalk around -40 dB">
+<figcaption><span class="pass">Good</span>: DQ1, spaced three trace widths from its
+neighbours (the "3W rule"), has NEXT near −40 dB.</figcaption></figure>
+<figure><img src="images/si_xtalk_bad.png" alt="Near-end crosstalk around -18 dB">
+<figcaption><span class="fail">Bad</span>: DQ5, tight against DQ4 and DQ6, picks up −18 dB:
+over 10 % of each neighbour's swing.</figcaption></figure>
+</div>
+<table>
+  <tr><th>Check</th><th>Good (PASS)</th><th>Borderline (WARN)</th><th>Bad (FAIL)</th></tr>
+  <tr><td>Worst NEXT or FEXT up to Nyquist</td><td>Below −30 dB</td><td>−30 to −20 dB</td>
+    <td>Above −20 dB</td></tr>
+</table>
+<p><b>Usual fixes.</b> Space traces further apart (three widths, or more for
+fast signals), shorten the parallel run, route on an inner layer (stripline has far less
+FEXT), or put a ground trace or a reference plane between them.</p>
+
+<h3 id="si-pulse-primer">Pulse response and ISI</h3>
+<p><b>What it is.</b> One lone "1" bit sent through the channel, as it arrives. An ideal
+channel would return a single tall bump one UI wide. A real one spreads it out: the bump
+shrinks (loss) and leaves a tail (loss and reflections). The orange dots, the
+<b>cursors</b>, are one UI apart: the tallest is the main cursor, the others are how much
+this bit lands on its neighbours. That leftover on other bits is <b>intersymbol
+interference (ISI)</b>, the main reason eyes close.</p>
+<div class="pair">
+<figure><img src="images/si_pulse_good.png" alt="A tall pulse that settles to zero within two UI">
+<figcaption><span class="pass">Good</span>: a 590 mV peak, and the tail is gone within about
+two UI.</figcaption></figure>
+<figure><img src="images/si_pulse_bad.png" alt="A shorter pulse with a long ringing tail of reflections">
+<figcaption><span class="fail">Bad</span>: a lower 460 mV peak, and the tail rings for 15 UI
+and more with the reflections, dipping −50 mV at 19 UI: those land on later bits.</figcaption></figure>
+</div>
+<p><b>What good looks like.</b> A tall main cursor and post-cursors that fall fast and smooth.
+A long tail that equalisation can learn (a smooth decay from loss) is fine; bumps and dips
+far out (reflections) are hard to equalise.</p>
+
+<h3 id="si-eye-primer">The eye diagram</h3>
+<p><b>What it is.</b> Take the received waveform, cut it into two-UI slices and lay every
+slice on top of the others. Where the ones and zeros never go, a hole opens: the
+<b>eye</b>. The receiver samples in the middle of it, so the bigger the hole, the more room
+for noise and timing error.</p>
+<ul>
+  <li><b>Eye height</b> (the vertical arrow): how far apart a one and a zero stay at the best
+    sampling time. Noise smaller than this cannot flip a bit.</li>
+  <li><b>Eye width</b> (the horizontal arrow): for how much of the UI the eye stays open.
+    Jitter smaller than this cannot make the receiver sample the wrong bit.</li>
+  <li><b>Contours</b>: KiPI's eye is <i>statistical</i>. The colours are how likely the
+    signal is to be at each point (yellow often, dark rarely). The solid line is where the
+    chance of an error reaches the target BER (usually 10<sup>−12</sup>); the dashed ones
+    are 10<sup>−3</sup>, 10<sup>−6</sup> and 10<sup>−9</sup>. Height and width are measured on
+    the solid line.</li>
+  <li><b>The mask</b> (the green shape): the smallest eye the receiver's datasheet
+    accepts. The eye must contain it.</li>
+</ul>
+<div class="pair">
+<figure><img src="images/si_eye_good.png" alt="A wide open eye, 827 mV by 0.90 UI">
+<figcaption><span class="pass">Good</span>: PCIe TX0 at 8 Gb/s, open 827 mV × 0.90 UI: thin
+traces, a clean diamond hole, sharp edges to the colour.</figcaption></figure>
+<figure><img src="images/si_eye_marginal.png" alt="A nearly closed eye, 97 mV by 0.38 UI, with many traces crossing">
+<figcaption><span class="warnc">Marginal</span>: the same pair pushed to 32 Gb/s without
+equalisation. The traces fan out into many levels (ISI) and the hole shrinks to
+97 mV × 0.38 UI.</figcaption></figure>
+<figure><img src="images/si_eye_closed.png" alt="A fully closed eye with no opening at the target BER">
+<figcaption><span class="fail">Closed</span>: the bad pair at 32 Gb/s, even with the best
+equaliser. No hole reaches 10<sup>−12</sup>; only a small region at 10<sup>−6</sup> is
+left. This link would not work.</figcaption></figure>
+<figure><img src="images/si_eye_equalised.png" alt="The marginal eye reopened by equalisation to 366 mV by 0.88 UI">
+<figcaption><span class="pass">Rescued by equalisation</span>: the marginal eye above, after
+the best equaliser KiPI found (here using 3 DFE taps): 366 mV × 0.88 UI.</figcaption></figure>
+</div>
+<table>
+  <tr><th>Check</th><th>Good (PASS)</th><th>Borderline (WARN)</th><th>Bad (FAIL)</th></tr>
+  <tr><td>Eye against the mask</td><td class="wrap">Height and width both at least the
+    mask's</td><td class="wrap">Both at least 70 % of the mask's</td>
+    <td class="wrap">Smaller still, or closed</td></tr>
+</table>
+<p><b>Reading the shape.</b> Thick, fuzzy crossings mean jitter. Several separate rails at the
+top and bottom mean ISI (each rail is a different bit pattern). Overshoot above the top rail
+means reflections. A lopsided eye means asymmetric rise and fall, or skew in a pair.</p>
+
+<h3 id="si-ber-primer">BER and the bathtub curves</h3>
+<p><b>What BER is.</b> The fraction of bits the receiver gets wrong. Links are specified at
+10<sup>−12</sup> (PCIe, USB) or lower: at 10 Gb/s that is about one error every 100 seconds,
+which the link's error recovery can absorb. A link at 10<sup>−6</sup> would make ten
+thousand errors a second.</p>
+<p><b>The bathtub curves</b> show BER against where the receiver samples, so you can see the
+margin, not just pass or fail:</p>
+<ul>
+  <li><b>Timing bathtub</b> (under the eye): BER against sampling time. Near the crossings it is
+    0.5 (a coin toss); it falls into a valley in the middle. Where the curve crosses the
+    target line (the dotted green 10<sup>−12</sup>) are the eye's edges, so the gap between
+    the walls at that line is the eye width.</li>
+  <li><b>Voltage bathtub</b> (beside the eye): BER against the decision threshold, at the
+    best sampling time. The gap between its walls at 10<sup>−12</sup> is the eye height.</li>
+</ul>
+<p><b>What good looks like.</b> Steep walls and a wide, deep floor: the curve plunges below
+10<sup>−12</sup> and stays there over most of the UI (see the good eye above: the floor
+spans about 0.8 UI). <b>Bad</b>: the walls meet, or the floor never gets down to the line
+(the closed eye above: the bathtub stays at 1).</p>
+
+<h3 id="si-eq-primer">Equalisation</h3>
+<p>Fast receivers and transmitters undo part of the channel's loss themselves. KiPI searches
+the interface's equalisers for the setting that opens the eye most:</p>
+<ul>
+  <li><b>FFE</b> (feed-forward equalisation, at the transmitter): pre-shoot and de-emphasis.
+    It boosts each edge relative to long runs of the same bit, pre-compensating the loss.</li>
+  <li><b>CTLE</b> (continuous-time linear equaliser, at the receiver): a filter that boosts
+    high frequencies back up. It also boosts noise.</li>
+  <li><b>DFE</b> (decision-feedback equaliser, at the receiver): subtracts the known tail of
+    the bits already received (the post-cursors) from the current one. It cancels ISI
+    without boosting noise, but only for a few UI.</li>
+</ul>
+<p><b>What it can and cannot fix.</b> Smooth loss equalises well: the good pair at 32 Gb/s
+went from 97 mV to 366 mV. Reflections and resonances do not: they land many UI later and
+change with the pattern, so the bad pair stayed closed. Untick <b>Equalised</b> in SI plots to
+see the raw channel.</p>
+
+<h3 id="si-com-primer">COM (channel operating margin)</h3>
+<p>One number for the whole link: the main cursor's signal over all the noise and
+interference at the target BER, in dB. It folds loss, ISI, crosstalk, jitter and noise
+together. The idea comes from the IEEE 802.3 Ethernet standards; KiPI's is a simplified
+form of it.</p>
+<table>
+  <tr><th>COM</th><th>Meaning</th></tr>
+  <tr><td><span class="pass">3 dB or more</span></td><td class="wrap">Passes with margin. The
+    good PCIe pair has 21 dB at 8 Gb/s and 8.5 dB at 32 Gb/s with equalisation.</td></tr>
+  <tr><td><span class="warnc">0 to 3 dB</span></td><td class="wrap">Works on paper, little
+    margin for manufacturing spread or temperature.</td></tr>
+  <tr><td><span class="fail">Below 0 dB</span></td><td class="wrap">Fails: the noise
+    outweighs the signal. The bad pair at 32 Gb/s: −2 dB.</td></tr>
+</table>
+
+<h3 id="si-skew-primer">Pair skew</h3>
+<p>The difference in arrival time between P and N. Skew turns part of the differential
+signal into common-mode noise (see mode conversion) and slows the differential edge. KiPI
+gives it as a share of the UI, since what matters is how it compares to one bit.</p>
+<table>
+  <tr><th>Check</th><th>Good (PASS)</th><th>Borderline (WARN)</th><th>Bad (FAIL)</th></tr>
+  <tr><td>P/N skew</td><td>Under 5 % of a UI</td><td>5 to 15 %</td><td>15 % or more</td></tr>
+</table>
+<p><b>Usual fixes.</b> Add a small serpentine on the shorter leg, close to where the
+mismatch is (at the bend or via that causes it), not at the far end.</p>
+
+<h3 id="si-waves-primer">Waveforms: overshoot, ringing, ringback</h3>
+<p><b>What it is.</b> The actual voltage at the driver and the receiver, from a transient
+simulation with the buffers (IBIS or generic). This is what an oscilloscope probe would
+show. It matters most for slower single-ended signals (clocks, resets, buses) where there
+is no eye spec but a false edge would be a fault.</p>
+<ul>
+  <li><b>Overshoot</b>: the signal rising past its final level. Too much stresses the
+    receiver's input protection.</li>
+  <li><b>Ringing</b>: oscillation after an edge, from reflections bouncing between the two
+    ends of an unterminated line.</li>
+  <li><b>Ringback</b>: ringing that swings back toward the logic threshold. If it crosses it,
+    the receiver sees an extra edge: a clock counts twice.</li>
+  <li><b>Monotonic</b>: the edge keeps going the same way through the threshold band, never
+    stepping back.</li>
+</ul>
+<div class="pair">
+<figure><img src="images/si_waves_good.png" alt="Clean square edges with no overshoot">
+<figcaption><span class="pass">Good</span>: CLK_GOOD has a 33 Ω series resistor at its
+driver (source termination), so its edges arrive clean and flat.</figcaption></figure>
+<figure><img src="images/si_waves_bad.png" alt="Edges overshooting to 3.8 V and ringing below 0 V">
+<figcaption><span class="warnc">Overshoot</span>: CLK_BAD, the same clock without the
+resistor, overshoots by 534 mV (16 % of the swing) and rings below 0 V on every edge.</figcaption></figure>
+</div>
+<table>
+  <tr><th>Check</th><th>Good (PASS)</th><th>Borderline (WARN)</th><th>Bad (FAIL)</th></tr>
+  <tr><td>Overshoot</td><td>Under 10 % of the swing</td><td>10 to 20 %</td><td>20 % or
+    more</td></tr>
+  <tr><td>Ringback</td><td class="wrap">Stays more than 5 % of the swing clear of the
+    thresholds</td><td class="wrap">Clears them by less</td><td class="wrap">Crosses into the
+    threshold band</td></tr>
+  <tr><td>Monotonic</td><td>Every edge</td><td class="wrap">An edge reverses inside the
+    threshold band</td><td></td></tr>
+</table>
+<p><b>Usual fixes.</b> Terminate the line: a series resistor at the driver (about the trace's
+Z0 minus the driver's own output impedance, often 22–33 Ω), or a resistor at the receiver
+end. Shorter traces and slower edges help too.</p>
+
+<h3 id="si-cheatsheet">Cheat sheet: every check at a glance</h3>
+<table>
+  <tr><th>Check</th><th>Shown in</th><th>Good</th><th>Bad</th><th>Most common cause</th></tr>
+  <tr><td>Impedance</td><td>TDR</td><td class="wrap">Flat inside target ±10 %</td>
+    <td class="wrap">Off target over ≥ 10 % of the route</td><td class="wrap">Wrong width or
+    spacing for the stackup; plane gaps</td></tr>
+  <tr><td>Insertion loss</td><td>S-parameters</td><td class="wrap">Smooth, within the limit
+    at Nyquist</td><td class="wrap">> 3 dB past the limit, notches</td><td class="wrap">Long
+    route, lossy laminate, stubs</td></tr>
+  <tr><td>Return loss</td><td>S-parameters</td><td class="wrap">Below the limit</td>
+    <td class="wrap">> 3 dB above it</td><td class="wrap">Impedance changes (vias, pads,
+    connectors)</td></tr>
+  <tr><td>Mode conversion</td><td>S-parameters</td><td>< −25 dB</td><td>> −15 dB</td>
+    <td class="wrap">Unmatched P and N</td></tr>
+  <tr><td>Crosstalk</td><td>S-parameters</td><td>< −30 dB</td><td>> −20 dB</td>
+    <td class="wrap">Traces too close, long parallel runs</td></tr>
+  <tr><td>Skew</td><td>Results</td><td>< 5 % UI</td><td>≥ 15 % UI</td><td class="wrap">Length
+    mismatch in a pair</td></tr>
+  <tr><td>Eye</td><td>Eye diagram</td><td class="wrap">Contains the mask</td>
+    <td class="wrap">Under 70 % of the mask, or closed</td><td class="wrap">Any of the above,
+    added up</td></tr>
+  <tr><td>COM</td><td>Results</td><td>≥ 3 dB</td><td>< 0 dB</td><td class="wrap">Any of the
+    above, added up</td></tr>
+  <tr><td>Overshoot</td><td>Waveforms</td><td>< 10 % of swing</td><td>≥ 20 %</td>
+    <td class="wrap">No termination</td></tr>
+</table>
+<div class="callout"><b>Where to start.</b> Fix in this order: the impedance (TDR) first,
+because reflections are the hardest to equalise; then crosstalk; then loss. Check the eye
+last, as the sum of everything. The Quick Scan finds most impedance and crosstalk faults
+across the whole board before you set up any channel.</div>
 
 <h2 id="si-setup">Signal Integrity setup tabs</h2>
 <p>The top of the panel picks the <b>Channel</b> to show; it is also the one selected in
@@ -2464,7 +2820,7 @@ models.</p>
   <li><b>Highest frequency</b> and <b>Step</b> of the sweep: by default up to five times
     Nyquist (and at least three over the edge), the step small enough for 64 UI of
     response.</li>
-  <li>The Quick Scan's targets and limits, and the 3D check's mesh and region.</li>
+  <li>The Quick Scan's targets and limits.</li>
 </ul>
 <p>The dielectrics' loss tangents come from the board's stackup where it has them, else the
 AC setup's loss tangent.</p>
@@ -2488,23 +2844,7 @@ AC setup's loss tangent.</p>
   <li><b>Waveforms at the dies</b>: the transient with the buffers, at the driver and the
     receiver.</li>
   <li><b>Pulse response</b>: one bit through the channel, with its cursors one UI apart.</li>
-  <li><b>3D check</b>: openEMS beside KiPI, after a <a href="#si-3d">3D check</a>.</li>
 </ul>
-
-<h2 id="si-3d">3D check with openEMS</h2>
-<p><a href="https://www.openems.de">openEMS</a> is a free full-wave (FDTD) field solver. With
-it installed (on the PATH, in <code>~/opt/openEMS</code>, or named by the
-<code>KIPI_OPENEMS</code> environment variable), pick a via of the solved channel under
-<b>3D check (openEMS)</b> on the Results tab and click <b>Run</b>. KiPI builds a 3D model of
-the copper around it (the Settings' <b>Region margin</b> beyond it): copper as thin sheets,
-the vias as barrels, the planes with their antipads, ports where the traces leave the region.
-The planes and the dielectric run on into the model's absorbing walls, as the board's go on
-past the region. KiPI's own model of the region takes its planes as unbounded to match. It
-runs openEMS once per port, and plots the S-parameters beside those of its own model of the
-same region, from the same ports. A difference of a dB or less in the through path is good
-agreement. On the example board's USB via the two agree within 0.5 dB from 1 to 10 GHz. The
-reflection is small in both, but openEMS shows it about 6 dB higher, partly from its lumped
-ports (a plain trace shows a similar offset), so treat it as an upper bound. It takes minutes; the progress bar follows openEMS's energy as it decays.</p>
 
 <!-- ================================================================== WORKFLOWS -->
 <h2 id="workflows">Step-by-step workflows</h2>

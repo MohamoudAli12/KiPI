@@ -12,6 +12,7 @@ from qtpy.QtWidgets import QApplication, QFormLayout  # noqa: E402
 
 from helpers.si_boards import make_board  # noqa: E402
 from kipi.dc.pi.model import PISetup  # noqa: E402
+from kipi.si.model import new_channel  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -63,8 +64,23 @@ def test_a_scanned_net_becomes_a_channel(panel, solved):
     assert len(panel.setup.si_channels) == 1
 
 
+def test_add_makes_channels_for_the_nets_ticked_in_board(panel):
+    add = panel.ch_list.buttons.itemAt(0).widget()
+    add.click()                                 # nothing ticked: nothing added, and why
+    assert panel.setup.si_channels == []
+    assert "Tick the nets" in panel.lbl_errors.text()
+    panel.set_nets(["USB_N", "CLK", "GND"])     # a pair's one leg: the pair, P its net
+    add.click()
+    chans = [(c.net, c.partner) for c in panel.setup.si_channels]
+    assert chans == [("CLK", ""), ("USB_P", "USB_N")]
+    assert panel.ch_list.current().net == "CLK"
+    add.click()                                 # the same nets again: no second channel
+    assert len(panel.setup.si_channels) == 2
+    assert "has a channel already" in panel.lbl_errors.text()
+
+
 def test_the_editor_writes_overrides(panel):
-    panel.ch_list.add(panel._new_channel())
+    panel.ch_list.add(new_channel("USB_P", "USB_N"))
     ed = panel.ch_list.editor
     ch = ed.obj
     ed.spins["rate_bps"].setValue(2.5)
@@ -82,13 +98,27 @@ def test_a_result_shows_its_checks_and_plots(app, panel, solved):
     panel.show_result(result)
     assert shown and shown[-1] is result
     assert panel.tbl_checks.rowCount() == len(result.checks)
-    assert panel.cmb_via.count() >= 1           # the pair's vias, for the 3D check
     ov = panel.overlay()
     assert ov is not None and len(ov.segments) > 0
     plot = SIPlot()
     plot.set_result(result)
     for key, _ in VIEWS:
         plot.set_view(key)                      # each draws without raising
+    plot.close()
+
+
+def test_the_solved_channels_compared(app, solved):
+    from kipi.si.gui.plot import SIPlot
+    results = _two_results(solved[2])
+    plot = SIPlot()
+    plot.set_result(results[0])
+    plot.set_view("compare")
+    assert "Solve channels" in plot.figure.axes[0].get_title()   # no results given yet
+    plot.results_source = lambda: results
+    plot.refresh_compare()
+    assert len(plot.figure.axes) == 4 and "2 solved channels" in plot.lbl.text()
+    names = [t.get_text() for t in plot.figure.axes[0].get_yticklabels()]
+    assert names == ["USB_P/USB_N", "USB again"]
     plot.close()
 
 
@@ -172,26 +202,10 @@ def test_results_round_trip(solved, tmp_path):
     d = report.load_results(f)
     r = d["results"][result.channel.name]
     assert r.s.shape == result.s.shape and abs(r.eye.height_v - result.eye.height_v) < 1e-12
+    assert r.eye.vbathtub.shape == result.eye.vbathtub.shape
     assert len(d["scan"].nets) == len(sc.nets)
     s4p = report.export_touchstone(tmp_path / "c", r)
     assert s4p.suffix == ".s4p" and "Port[4]" in s4p.read_text()
-
-
-def test_the_3d_check_says_why_it_cannot_run(app, panel):
-    """A channel with no vias has nothing for the openEMS check: the button is off and the
-    list says why, rather than sitting empty."""
-    from kipi.si.model import new_channel
-    from kipi.si.solver import solve_channel
-    snap = make_board()
-    setup = PISetup()
-    setup.si_channels = [new_channel("CLK")]
-    panel.set_board(snap, setup)
-    assert "Solve" in panel.cmb_via.placeholderText()
-    panel.show_result(solve_channel(snap, setup, "CLK"))
-    assert panel.cmb_via.count() == 0 and not panel.btn_em.isEnabled()
-    assert "no vias" in panel.cmb_via.placeholderText()
-    assert "no vias" in panel.btn_em.toolTip()
-
 
 
 def test_solve_is_under_the_channel_settings(panel):

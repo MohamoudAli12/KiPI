@@ -39,7 +39,7 @@ plugin. It has four analysis modes:
   series parts) is extracted from field-solved cross-sections and via models into
   S-parameters, TDR, statistical and PRBS eyes with the interface's equaliser, COM, and
   waveforms with generic or IBIS buffers, each checked against the interface (USB, PCIe,
-  SATA, HDMI, LVDS, DDR4 and more). openEMS, if installed, checks a via's model in 3D.
+  SATA, HDMI, LVDS, DDR4 and more).
 
 New to KiPI? The **[user guide](docs/help.html)** (also the **Help** button in KiPI, or
 **F1**) walks through every button, the workflows and what the results mean. Every
@@ -430,12 +430,7 @@ each.
   `.s2p`/`.s4p`, and **Export SPICE…** a passive rational model of it as a SPICE subcircuit
 for any circuit simulator; **Report** and **Save results…** work as in the other modes.
 * **Settings**: section length, etch, copper roughness (Hammerstad, Groisse or Huray), the
-  sweep, the scan's limits and the 3D check's mesh.
-
-**3D check (openEMS)**: with [openEMS](https://www.openems.de) installed (on the PATH, in
-`~/opt/openEMS`, or named by `KIPI_OPENEMS`), pick a via of the solved channel and **Run**:
-KiPI simulates the copper around it in 3D and plots openEMS's S-parameters beside its own
-model's, from the same ports. It takes minutes; the rest of the SI mode takes seconds.
+  sweep and the scan's limits.
 
 ### Tips and troubleshooting
 
@@ -509,7 +504,7 @@ CI runs ruff and the test suite for every push and pull request on Windows, Linu
 | `kipi/dc/` | DC analysis: conduction FEM, power-tree setup and solve, thermal, reports, results views and panel |
 | `kipi/ac/` | AC analysis: PDN impedance over frequency, field solver and sweep, targets, transient, report and panel |
 | `kipi/noise/` | Coupled Noise analysis: waveforms, hot loop parasitics, coupling extraction, victim solves, report and panel |
-| `kipi/si/` | Signal Integrity: 2D cross-section field solver, via models, channel circuit, S-parameters, IBIS, transient, eyes and equalisers, Quick Scan, openEMS 3D check, report and panel |
+| `kipi/si/` | Signal Integrity: 2D cross-section field solver, via models, channel circuit, S-parameters, IBIS, transient, eyes and equalisers, Quick Scan, report and panel |
 | `kipi/gui/` | PySide6 application shell shared by every mode: main window, mode switch, 3D viewer, worker threads, About and Help |
 | `docs/help.html` | The user guide opened by **Help**; a single offline HTML file |
 | `docs/solver-guide.html` | The Solver Guide: PI background and how the solvers work |

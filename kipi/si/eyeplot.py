@@ -2,8 +2,9 @@
 
 A statistical eye shows the probability of each voltage at each phase (log scale), its
 inner edges at several BERs (the target's thicker), the eye height and width at the
-target BER as arrows, the receiver's mask and, under it, the bathtub: the BER of a bit
-sampled at the threshold against phase. A waveform eye shows how often a simulated PRBS
+target BER as arrows, the receiver's mask, under it the bathtub (the BER of a bit sampled
+at the threshold against phase) and beside it the voltage bathtub (the BER sampled at the
+eye's middle against threshold). A waveform eye shows how often a simulated PRBS
 waveform passes each point, its traces drawn as lines.
 """
 
@@ -106,13 +107,19 @@ def draw_eye(fig, e, mask: Optional[Tuple[float, float]] = None, theme: Theme = 
     fig.subplots_adjust(left=0.09, right=0.92, top=0.93 if title else 0.97, bottom=0.14)
     stat = e.kind == "statistical"
     tub = bathtub and stat and e.bathtub is not None
+    vtub = tub and getattr(e, "vbathtub", None) is not None      # older saved results: none
     if tub:
-        gs = fig.add_gridspec(2, 2, height_ratios=(3.2, 1), width_ratios=(40, 1), hspace=0.08,
-                              wspace=0.03)
+        # The eye, the voltage bathtub beside it (when there is one), the colour bar; the
+        # timing bathtub under the eye.
+        widths = (40, 9, 1) if vtub else (40, 1)
+        gs = fig.add_gridspec(2, len(widths), height_ratios=(3.2, 1), width_ratios=widths,
+                              hspace=0.08, wspace=0.03)
         ax = fig.add_subplot(gs[0, 0])
-        cax = fig.add_subplot(gs[0, 1])
+        cax = fig.add_subplot(gs[0, -1])
         bx = fig.add_subplot(gs[1, 0], sharex=ax)
+        vx = fig.add_subplot(gs[0, 1], sharey=ax) if vtub else None
     else:
+        vx = None
         gs = fig.add_gridspec(1, 2, width_ratios=(40, 1), wspace=0.03)
         ax = fig.add_subplot(gs[0, 0])
         cax = fig.add_subplot(gs[0, 1])
@@ -202,6 +209,20 @@ def draw_eye(fig, e, mask: Optional[Tuple[float, float]] = None, theme: Theme = 
         bx.minorticks_off()
         ax.tick_params(labelbottom=False)
         _style(bx, theme)
+    if vx is not None:
+        lo = min(e.ber / 1e3, 1e-3)
+        vx.semilogx(np.clip(e.vbathtub, lo, 0.5), lv * 1e3,
+                    color="#08519c" if theme is LIGHT else "#40d0ff", lw=1.3)
+        vx.axvline(e.ber, color=theme.mask, ls=":", lw=1)
+        vx.axhline(e.threshold_v * 1e3, color=theme.grid, lw=0.6)
+        vx.set_xlim(lo, 1.0)
+        vx.set_xlabel("BER", fontsize=9)
+        vx.set_xticks([e.ber, 1.0], [f"{e.ber:.0e}", "1"], fontsize=7)
+        vx.minorticks_off()
+        vx.tick_params(labelleft=False)
+        vx.grid(True, color=theme.grid, lw=0.4, which="major")
+        _style(vx, theme)
+        ax.set_ylim(*_limits(e))                 # shared: the bathtub's levels go wider
     else:
         ax.set_xlabel("Time (UI)", fontsize=9)
     fig.patch.set_facecolor(theme.bg)

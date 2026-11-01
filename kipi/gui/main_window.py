@@ -7,7 +7,6 @@ import copy
 import html
 import logging
 import math
-import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -410,12 +409,13 @@ class MainWindow(QMainWindow):
         si = self._si_panel = SIPanel(self)
         si.solve_requested.connect(self.run_si_solve)
         si.scan_requested.connect(self.run_si_scan)
-        si.em_requested.connect(self.run_si_em)
         si.report_requested.connect(self._si_report)
         si.reports_requested.connect(self._si_reports)
         si.touchstone_requested.connect(self._si_touchstone)
         si.spice_requested.connect(self._si_spice)
         si.result_selected.connect(self._show_si_result)
+        si.results_changed.connect(lambda: self.si_plot.refresh_compare())
+        self.si_plot.results_source = si.solved_results
         si.overlay_changed.connect(lambda: self._show_coupling(front=False))
         si.focus_changed.connect(self._update_focus)
         si.results_saved.connect(
@@ -2593,38 +2593,6 @@ class MainWindow(QMainWindow):
                 self.views.setCurrentWidget(self.viewer)
 
         if self._run(work, done, "Signal Integrity Quick Scan") is not None:
-            self.si_panel.set_busy(True)
-
-    def run_si_em(self, setup, name: str, via_id: str):
-        """A 3D openEMS check of the region around a via of a solved channel, beside
-        KiPI's own model of the same region."""
-        snap = self.snapshot
-        if snap is None or self._busy():
-            return
-        frozen = copy.deepcopy(setup)
-        work_dir = Path(tempfile.mkdtemp(prefix="kipi-openems-"))
-
-        def work(progress):
-            from kipi.si.verify import verify_via
-            board = self._si_board(snap, frozen)
-            try:
-                return verify_via(snap, frozen, name, via_id, work_dir, progress, board), None
-            except Exception as e:  # noqa: BLE001 - shown in the panel
-                progress.warn(f"{type(e).__name__}: {e}")
-                return None, f"{type(e).__name__}: {e}"
-
-        def done(out):
-            cmp, error = out
-            if cmp is None:
-                self.si_panel.show_em(None, f'<span style="color:#ff7070">{html.escape(error)}'
-                                            '</span>')
-                return
-            self.si_panel.show_em(cmp, cmp.summary_html())
-            self.si_plot.set_em(cmp)
-            self.views.setCurrentWidget(self.si_plot)
-            self.log(cmp.summary_text())
-
-        if self._run(work, done, "openEMS 3D check") is not None:
             self.si_panel.set_busy(True)
 
     def _show_si_result(self, result):

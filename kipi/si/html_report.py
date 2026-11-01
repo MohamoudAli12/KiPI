@@ -71,6 +71,20 @@ def _tdr_png(r) -> str:
     return _png(fig)
 
 
+def _ink():
+    from kipi.si.siplots import Ink
+    return Ink(COLORS, "#333", "#888", ("#2ca02c", "#e0a000", "#d62728"))
+
+
+def _compare_png(results) -> str:
+    from matplotlib.figure import Figure
+    from kipi.si.siplots import draw_compare
+    fig = Figure(figsize=(9, 1.2 + 0.32 * len(results)))
+    draw_compare(fig, results, _ink(), lambda ax: ax.grid(True, lw=0.4, color="#ccc"))
+    fig.tight_layout()
+    return _png(fig)
+
+
 def _sparams_png(r) -> str:
     fig, ax = _figure()
     f = r.freqs / 1e9
@@ -181,6 +195,7 @@ def write_si_reports(path, results, snap, setup, scan=None, progress=None) -> Pa
                      eye])
     parts.append(_table(["Channel", "Interface", "Result", "Checks passed", "Data rate",
                          "Length (mm)", "Eye"], rows))
+    parts.append(_img(pdf, _compare_png(results)))
     attachments = []
     for i, r in enumerate(results):
         if progress is not None:

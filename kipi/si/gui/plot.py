@@ -1,21 +1,22 @@
 """A Signal Integrity channel's plots: the impedance profile (TDR), the S-parameters,
-the eye, the waveforms at the dies and the pulse response."""
+the eye, the waveforms at the dies and the pulse response; and the solved channels side
+by side."""
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, List, Optional
 
 import numpy as np
 from qtpy.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from kipi.ac.gui.plot import COLORS, _eng_hz
-from kipi.si.sparams import db as sparams_db
+from kipi.si.siplots import Ink, draw_compare
 
 EMPTY = "Solve a channel in Signal Integrity mode to see its plots here."
 
 VIEWS = (("eye", "Eye diagram"), ("tdr", "Impedance (TDR)"), ("sparams", "S-parameters"),
          ("waves", "Waveforms at the dies"), ("pulse", "Pulse response"),
-         ("em", "3D check: openEMS vs KiPI"))
+         ("compare", "Solved channels compared"))
 BG = "#1e1e1e"
 
 
@@ -25,7 +26,8 @@ class SIPlot(QWidget):
         from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
         from matplotlib.figure import Figure
         self.result = None
-        self.em = None                       # the last openEMS check (kipi.si.verify.ViaCheck)
+        #: The solved channels' results, in the setup's order, for the comparison.
+        self.results_source: Callable[[], List[object]] = lambda: []
         self.figure = Figure(figsize=(6, 3), tight_layout=True)
         self.figure.patch.set_facecolor(BG)
         self.canvas = FigureCanvasQTAgg(self.figure)
@@ -94,11 +96,9 @@ class SIPlot(QWidget):
         self.result = result
         self._draw()
 
-    def set_em(self, check):
-        """An openEMS check to show in its view (and switch to it)."""
-        self.em = check
-        if self.result is not None:
-            self.set_view("em")
+    def refresh_compare(self):
+        """The solved channels changed: redraw the comparison if it is shown."""
+        if self.cmb_view.currentData() == "compare":
             self._draw()
 
     def save_png(self, path: str):
@@ -119,7 +119,10 @@ class SIPlot(QWidget):
         text = getattr(self, f"_draw_{view}")(r) or ""
         if not self._styled:                 # the eye styles its own axes
             self._style()
-        self.lbl.setText(f"<b>{r.channel.name}</b> — {text}" if text else r.channel.name)
+        if view == "compare":                # every channel, not the one picked
+            self.lbl.setText(text)
+        else:
+            self.lbl.setText(f"<b>{r.channel.name}</b> — {text}" if text else r.channel.name)
         self.canvas.draw_idle()
 
     def _draw_eye(self, r) -> str:
@@ -164,6 +167,18 @@ class SIPlot(QWidget):
         note = getattr(r, "tdr_note", "")
         return (f"TDR with a {r.channel.value('rise_s') * 1e12:.0f} ps edge, referred to "
                 f"{r.z_ref:g} Ω" + (f". {note}" if note else ""))
+
+    def _draw_compare(self, _r) -> str:
+        results = self.results_source()
+        if not results:
+            self.ax.set_title("Solve channels to compare them here")
+            return ""
+        self.figure.clear()
+        draw_compare(self.figure, results, Ink(COLORS, "#ccc", "#888"), self._style)
+        self._styled = True
+        passed = sum(x.status == "PASS" for x in results)
+        return (f"{len(results)} solved channels, {passed} passing; each bar coloured by "
+                "its check, the tick its limit")
 
     def _draw_sparams(self, r) -> str:
         ax = self.ax
@@ -211,28 +226,6 @@ class SIPlot(QWidget):
         self._legend(ax)
         kinds = {r.channel.driver.kind, r.channel.receiver.kind}
         return f"with {'IBIS' if 'ibis' in kinds else 'generic'} buffers"
-
-    def _draw_em(self, r) -> str:
-        ax = self.ax
-        c = self.em
-        if c is None or c.channel != r.channel.name:
-            ax.set_title("Run a 3D check (Results tab) to compare with openEMS")
-            return ""
-        f = c.freqs
-        from matplotlib.ticker import FuncFormatter
-        th = c.through()
-        pairs = [(0, 0)] + ([th] if th is not None else [])
-        for k, (i, j) in enumerate(pairs):
-            col = COLORS[k % len(COLORS)]
-            name = f"S{i + 1}{j + 1}"
-            ax.plot(f, sparams_db(c.s_em[:, i, j]), color=col, lw=1.6, label=f"{name} openEMS")
-            ax.plot(f, sparams_db(c.s_kipi[:, i, j]), color=col, lw=1.2, ls="--",
-                    label=f"{name} KiPI")
-        ax.xaxis.set_major_formatter(FuncFormatter(_eng_hz))
-        ax.set_xlabel("Frequency")
-        ax.set_ylabel("dB")
-        self._legend(ax)
-        return c.summary_text()
 
     def _draw_pulse(self, r) -> str:
         ax = self.ax

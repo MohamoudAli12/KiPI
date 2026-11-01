@@ -137,10 +137,12 @@ class EyeResult:
     density: np.ndarray
     ber_contour: Optional[np.ndarray] = None    # (phases, 2): lower and upper eye edge
     # The eye's inner edges at more BERs than the target (statistical eyes), and the
-    # bathtub: the BER sampling at each phase at the threshold.
+    # bathtubs: the BER sampling at each phase at the threshold, and at each threshold at
+    # the eye's middle.
     contour_bers: List[float] = field(default_factory=list)
     contours: Optional[np.ndarray] = None       # (len(contour_bers), phases, 2)
     bathtub: Optional[np.ndarray] = None        # (phases,)
+    vbathtub: Optional[np.ndarray] = None       # (levels,)
     height_v: float = 0.0
     width_ui: float = 0.0
     center_ui: float = 0.0
@@ -364,7 +366,7 @@ def _edges(lv: np.ndarray, cdf1: np.ndarray, t0: np.ndarray, ber: float):
 
 def _ber_contour(res: EyeResult, pdf0: np.ndarray, pdf1: np.ndarray, ber: float):
     """The eye's inner edges at ``ber`` (and at :data:`CONTOUR_BERS` above it) at each
-    phase, its height and width, and the bathtub at its threshold."""
+    phase, its height and width, and the bathtubs through its middle."""
     lv = res.levels_v
     tot1 = pdf1.sum(axis=1, keepdims=True)
     tot0 = pdf0.sum(axis=1, keepdims=True)
@@ -401,6 +403,10 @@ def _ber_contour(res: EyeResult, pdf0: np.ndarray, pdf1: np.ndarray, ber: float)
     j = int(np.clip(np.searchsorted(lv, res.threshold_v), 0, len(lv) - 1))
     tub = 0.5 * (np.nan_to_num(cdf1[:, j], nan=1.0) + np.nan_to_num(t0[:, j], nan=1.0))
     res.bathtub = np.clip(tub, 1e-300, 0.5)
+    # The voltage bathtub: the error probability at the eye's middle for each threshold.
+    k = int(np.argmin(np.abs(res.phases_ui - res.center_ui)))
+    vtub = 0.5 * (np.nan_to_num(cdf1[k], nan=1.0) + np.nan_to_num(t0[k], nan=1.0))
+    res.vbathtub = np.clip(vtub, 1e-300, 0.5)
 
 
 def com(p: Pulse, der: float = 1e-12, rj_ui: float = 0.01, dj_ui: float = 0.05,

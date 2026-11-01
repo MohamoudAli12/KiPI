@@ -174,7 +174,6 @@ figure svg { display: block; max-width: 760px; background: var(--panel);
         <li><a href="#si-network">The channel circuit</a></li>
         <li><a href="#si-eye">Eyes, equalisers and COM</a></li>
         <li><a href="#si-transient">Buffers and the transient</a></li>
-        <li><a href="#si-openems">The 3D check</a></li>
       </ol></li>
     <li><a href="#solvers">Linear solvers and PARDISO</a></li>
     <li class="group">In practice</li>
@@ -876,9 +875,7 @@ separately. The stitching vias are then shorted (a Schur reduction that cancels 
 capacitance exactly), which leaves the vias' return impedance. Near ground vias, that is
 an inductance, and it falls as more of them are added. With none, it is the plane pair's
 capacitance and resonances, which show in the channel's loss. A pair's two vias share the
-planes, so they are coupled through the same matrix. In the 3D check the planes run on
-for ever, so the same matrix comes from the plane pair's Hankel-function Green's function,
-whose real part is the power the vias radiate between the planes.</p>
+planes, so they are coupled through the same matrix.</p>
 
 <h3 id="si-network">The channel circuit</h3>
 <p>Each section is an N-conductor lossy transmission line. Its admittance comes from the
@@ -918,17 +915,6 @@ The channel's S-parameters become impulse responses. At each time step the waves
 travelling are convolved, and Newton's method solves each port's nonlinear buffer against
 them, as in a SPICE simulator's S-parameter element. Generic buffers are the same with
 linear tables and a raised-cosine edge.</p>
-
-<h3 id="si-openems">The 3D check</h3>
-<p>Everything above is 2.5D: the field is solved in cross-sections and around vias, then
-joined by circuit theory. That is fast, and accurate where the structure is uniform, but a
-via field or a pad is truly 3D. openEMS solves Maxwell's equations in 3D in time (FDTD).
-KiPI writes the region around a via directly as openEMS input: copper as sheets, the vias
-as barrels, the planes with their antipads, the dielectrics with their loss. A graded mesh
-runs fine at the features and coarse away from them, and absorbing boundaries surround it.
-Each port is excited in turn with a band-pass pulse (no DC, which a loop of planes and
-ground vias would hold for ever). The ports' voltages and currents, Fourier transformed,
-give the S-parameters, plotted beside KiPI's model of the same copper.</p>
 
 <h2 id="solvers">Linear solvers and PARDISO</h2>
 <p>Every analysis ends in a large sparse system of equations, one unknown per mesh node. DC

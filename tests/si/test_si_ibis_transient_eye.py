@@ -211,6 +211,12 @@ def test_eye_contours_and_bathtub():
     assert e.center_ui == pytest.approx(0.0, abs=0.02)
     assert e.bathtub[np.argmin(abs(e.phases_ui))] < 1e-12
     assert e.bathtub[np.argmin(abs(e.phases_ui - 0.5))] > 0.1     # at the crossing
+    # The voltage bathtub: open at the threshold, closing toward the rails.
+    thr = np.argmin(abs(e.levels_v - e.threshold_v))
+    assert e.vbathtub.shape == e.levels_v.shape
+    assert e.vbathtub[thr] < 1e-12
+    assert e.vbathtub[np.argmin(abs(e.levels_v - 0.8))] > 0.1     # at the 1 level
+    assert e.vbathtub[np.argmin(abs(e.levels_v))] > 0.1           # at the 0 level
 
 
 def test_waveform_eye_centred_and_drawn_as_lines():
@@ -241,7 +247,7 @@ def test_eye_plot_draws_both_kinds():
     e = eyes.statistical_eye(_ideal_pulse(), 1e-12, 0.01, 0.05, swing=0.8)
     fig = Figure()
     draw_eye(fig, e, (0.2, 0.4), DARK)
-    assert len(fig.axes) == 3                           # eye, colour bar, bathtub
+    assert len(fig.axes) == 4               # eye, colour bar, bathtub, voltage bathtub
     labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
     assert "BER 1e-12" in labels and "Receiver mask" in labels
     t = np.arange(4000) * 1e-10 / 32

@@ -6,15 +6,15 @@
 * **Channels**  each channel's nets, interface and buffers (generic or IBIS), and any
   value of the interface's to override.
 * **Results**  the solved channel's checks and notes, its report, its results file and its
-  Touchstone file; and a 3D (openEMS) check of a via of it.
-* **Settings**  the cross-sections, the frequency sweep, the scan's limits and openEMS.
+  Touchstone file.
+* **Settings**  the cross-sections, the frequency sweep and the scan's limits.
 """
 
 from __future__ import annotations
 
 import html
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
@@ -560,6 +560,16 @@ class ChannelList(ItemList):
         super()._edited()
         self._decorate()
 
+    def _add(self):
+        """Add: make_new gives a list, a channel for each net ticked in Board."""
+        new = self.make_new() or []
+        if not new:
+            return
+        self.items().extend(new)
+        self.reload()
+        self.select_name(new[0].name)
+        self.changed.emit()
+
     def set_status(self, name: str, status: Optional[str]):
         if status is None:
             self.status.pop(name, None)
@@ -609,8 +619,8 @@ def _skipped_html(nets) -> str:
 class SIPanel(QWidget):
     solve_requested = Signal(object, object)       # PISetup, channel names (a list)
     scan_requested = Signal(object, object)        # PISetup, nets (None: every signal net)
-    em_requested = Signal(object, str, str)        # PISetup, channel name, via id
     result_selected = Signal(object)               # ChannelResult shown; None clears
+    results_changed = Signal()                     # a channel solved, failed or dropped
     overlay_changed = Signal()                     # the 3D impedance overlay changed
     focus_changed = Signal()                       # focus_nets() changed
     setup_changed = Signal()
@@ -618,8 +628,6 @@ class SIPanel(QWidget):
     open_results_requested = Signal()              # reopen a saved .kipi-si-results
     report_requested = Signal(object, str)         # the shown ChannelResult, "html"/"pdf"
     reports_requested = Signal(object, str)        # ChannelResults for one report, format
-    EM_TIP = ("Simulate the region around the via in openEMS (minutes) and compare its "
-              "S-parameters with KiPI's")
     touchstone_requested = Signal(object)          # the shown ChannelResult
     spice_requested = Signal(object)               # the shown ChannelResult
     part_selected = Signal(str, str, bool)         # for the main window; none here
@@ -634,7 +642,6 @@ class SIPanel(QWidget):
         self._failed: Dict[str, str] = {}          # channel name -> why its solve failed
         self._busy = False
         self.scan_result = None
-        self.em_result = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
 
@@ -659,7 +666,10 @@ class SIPanel(QWidget):
         self.btn_solve = editor.btn_solve
         self.btn_solve.clicked.connect(self._solve)
         self.ch_list = ChannelList(lambda: self.setup.si_channels, editor,
-                                   self._new_channel, self._describe_channel, noun="channel")
+                                   self._new_channels, self._describe_channel, noun="channel")
+        self.ch_list.buttons.itemAt(0).widget().setToolTip(
+            "Add a channel for each signal net ticked in Board's Nets list (a pair's two "
+            "legs as one channel) that has none yet")
         self.ch_list.ticks_changed.connect(self._on_changed)
         self.ch_list.selected.connect(self._list_selected)
         self.ch_list.changed.connect(self._on_changed)
@@ -792,20 +802,6 @@ class SIPanel(QWidget):
         row.addWidget(self.btn_open)
         row.addStretch(1)
         v.addLayout(row)
-        box = QGroupBox("3D check (openEMS)")
-        bl = QHBoxLayout(box)
-        self.cmb_via = QComboBox()
-        self.cmb_via.setToolTip("A via (or layer change) of the solved channel to simulate "
-                                "in 3D with openEMS, beside KiPI's own model of it")
-        bl.addWidget(self.cmb_via, 1)
-        self.btn_em = QPushButton("Run")
-        self.btn_em.setToolTip(self.EM_TIP)
-        self.btn_em.clicked.connect(self._em)
-        bl.addWidget(self.btn_em)
-        v.addWidget(box)
-        self.lbl_em = QLabel()
-        self.lbl_em.setWordWrap(True)
-        v.addWidget(self.lbl_em)
         self._show_buttons()
         return w
 
@@ -869,19 +865,6 @@ class SIPanel(QWidget):
         spin("skew_limit_mm", "Pair skew limit", 0, 50, 2, " mm")
         spin("stitch_radius_mm", "Return via radius", 0, 20, 2, " mm",
              tip="A ground via this near a layer change carries its return current")
-        f.addRow(QLabel("<b>3D check (openEMS)</b>"))
-        spin("em_f_max_hz", "Highest frequency", 1, 100, 1, " GHz", 1e9)
-        spin("em_fine_mm", "Finest mesh", 0.005, 1, 3, " mm")
-        spin("em_margin_mm", "Region margin", 0.2, 20, 1, " mm",
-             tip="The region simulated around the via")
-        spin("em_end_db", "Stop at energy", -80, -10, 0, " dB")
-        from kipi.si.openems import find_openems
-        exe = find_openems()
-        lbl = QLabel(f"openEMS: {exe}" if exe else
-                     "openEMS not found: install it, or set KIPI_OPENEMS to its executable")
-        lbl.setWordWrap(True)
-        lbl.setStyleSheet("color: #999;")
-        f.addRow(lbl)
         return w
 
     # ------------------------------------------------------------------ data
@@ -985,8 +968,11 @@ class SIPanel(QWidget):
         self.cmb_channel.setCurrentIndex(i if i >= 0 else (0 if self.setup.si_channels else -1))
         self.cmb_channel.blockSignals(False)
         names = {c.name for c in self.setup.si_channels}
-        for gone in set(self._results) - names:
+        gone_results = set(self._results) - names
+        for gone in gone_results:
             del self._results[gone]
+        if gone_results:
+            self.results_changed.emit()
         for gone in set(self._failed) - names:
             del self._failed[gone]
         if hasattr(self, "ch_list"):
@@ -1064,11 +1050,6 @@ class SIPanel(QWidget):
         nets = self._nets if self.setup.si.scan_nets == "scope" else None
         self.scan_requested.emit(self.setup, nets)
 
-    def _em(self):
-        via = self.cmb_via.currentData()
-        if self.result is not None and via:
-            self.em_requested.emit(self.setup, self.result.channel.name, via)
-
     def set_busy(self, busy: bool, queued: bool = False):
         self._busy = busy
         self.btn_solve.setText(("Queued…" if queued else "Solving…") if busy
@@ -1076,29 +1057,36 @@ class SIPanel(QWidget):
         self.btn_solve.setEnabled(not busy and not self._errors())
         self.btn_scan.setEnabled(not busy)
         self.btn_open.setEnabled(not busy)
-        self.btn_em.setEnabled(not busy and self.result is not None and
-                               self.cmb_via.count() > 0)
 
     # ------------------------------------------------------------------ new items
-    def _new_channel(self) -> Optional[Channel]:
+    def _new_channels(self) -> List[Channel]:
+        """A channel for each signal net ticked in Board (a pair's two legs one channel,
+        its positive leg the net) that no channel has yet."""
         if self.snapshot is None:
-            return None
-        from kipi.si.pairs import manual_of, pair_map
-        taken = {c.net for c in self.setup.si_channels} | {c.partner for c in
-                                                           self.setup.si_channels}
-        nets = [n for n in self._signal_nets() if n not in taken]
-        if not nets:
-            self.lbl_errors.setText("• No signal net is left to add")
-            return None
-        pairs = pair_map(self._signal_nets(), manual_of(self.setup.si))
-        net = nets[0]
-        partner = pairs.get(net, "")
-        if partner and partner < net:
-            net, partner = partner, net
-        return self._unique(new_channel(net, partner))
+            return []
+        from kipi.si.pairs import manual_of, pair_map, positive_first
+        signal = self._signal_nets()
+        ticked = [n for n in signal if n in set(self._nets)]
+        if not ticked:
+            self.lbl_errors.setText("• Tick the nets to add in Board's Nets list, then Add")
+            return []
+        manual = manual_of(self.setup.si)
+        pairs = pair_map(signal, manual)
+        taken = {n for c in self.setup.si_channels for n in (c.net, c.partner) if n}
+        out, seen = [], set(taken)
+        for n in ticked:
+            if n in seen:
+                continue
+            partner = pairs.get(n, "")
+            net, partner = positive_first(n, partner, manual) if partner else (n, "")
+            seen |= {net, partner}
+            out.append(self._unique(new_channel(net, partner), [c.name for c in out]))
+        if not out:
+            self.lbl_errors.setText("• Every net ticked in Board has a channel already")
+        return out
 
-    def _unique(self, ch: Channel) -> Channel:
-        names = {c.name for c in self.setup.si_channels}
+    def _unique(self, ch: Channel, more: Sequence[str] = ()) -> Channel:
+        names = {c.name for c in self.setup.si_channels} | set(more)
         base, k = ch.name, 2
         while ch.name in names:
             ch.name = f"{base} ({k})"
@@ -1241,15 +1229,13 @@ class SIPanel(QWidget):
         self.ch_list.status.clear()
         self.ch_list.reload()
         self._clear_shown()
+        self.results_changed.emit()
 
     def _clear_shown(self):
         self.result = None
-        self.em_result = None
         self.tbl_checks.setRowCount(0)
         self.txt_notes.clear()
         self.lbl_status.setText("Not solved")
-        self.lbl_em.clear()
-        self.cmb_via.clear()
         self.btn_report.setVisible(False)
         self._show_buttons()
 
@@ -1260,13 +1246,6 @@ class SIPanel(QWidget):
         self.btn_touchstone.setEnabled(have)
         self.btn_spice.setEnabled(have)
         self.btn_save.setEnabled(bool(self._results) or self.scan_result is not None)
-        vias = self.cmb_via.count() > 0
-        self.btn_em.setEnabled(have and vias)
-        why = ("" if have and vias else
-               "Solve the channel first" if not have else
-               "This channel has no vias: the 3D check simulates the region around one")
-        self.cmb_via.setPlaceholderText(why)
-        self.btn_em.setToolTip(why or self.EM_TIP)
 
     def show_error(self, message: str, name: Optional[str] = None):
         """Why a solve failed; with ``name``, kept for that channel and shown when it is
@@ -1275,6 +1254,7 @@ class SIPanel(QWidget):
             self._failed[name] = message
             self._results.pop(name, None)
             self.ch_list.set_status(name, "ERROR")
+            self.results_changed.emit()
             if name != (self.cmb_channel.currentData() or ""):
                 return
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.tbl_checks.parentWidget()))
@@ -1286,6 +1266,7 @@ class SIPanel(QWidget):
         self._results[result.channel.name] = result
         self._failed.pop(result.channel.name, None)
         self.ch_list.set_status(result.channel.name, result.status)
+        self.results_changed.emit()
         if result.channel.name == (self.cmb_channel.currentData() or ""):
             self._display(result)
             if front:
@@ -1306,8 +1287,6 @@ class SIPanel(QWidget):
 
     def _display(self, r):
         self.result = r
-        self.em_result = None
-        self.lbl_em.clear()
         col = STATUS_COLORS.get(r.status, "#ccc")
         self.lbl_status.setText(
             f'<b>{html.escape(r.channel.name)}</b>: <span style="color:{col}"><b>{r.status}'
@@ -1326,28 +1305,10 @@ class SIPanel(QWidget):
         notes = [f"Nets: {', '.join(r.nets)}", "Ports: " + "; ".join(r.port_names)]
         notes += r.notes
         self.txt_notes.setHtml("<br>".join(html.escape(n) for n in notes))
-        self.cmb_via.clear()
-        for v in self._channel_vias(r):
-            self.cmb_via.addItem(v[1], v[0])
         self.btn_report.setVisible(bool(getattr(r, "report_path", "")))
         self._show_buttons()
         self.result_selected.emit(r)
         self.overlay_changed.emit()
-
-    def _channel_vias(self, r):
-        """(via id, label) of the vias on the channel's victim nets."""
-        if self.snapshot is None:
-            return []
-        out = []
-        victims = [n for n in r.nets if n not in r.channel.aggressors]
-        for v in self.snapshot.vias:
-            if v.net in victims:
-                out.append((v.id, f"{v.net} via at ({v.position[0]:.2f}, {v.position[1]:.2f})"))
-        return out
-
-    def show_em(self, em, message: str):
-        self.em_result = em
-        self.lbl_em.setText(message)
 
     def set_report(self, result, path: str):
         result.report_path = path
@@ -1390,6 +1351,7 @@ class SIPanel(QWidget):
             self.show_scan(scan)
         self._show_channel_result()
         self._show_buttons()
+        self.results_changed.emit()
         return sorted(set(results) - names)
 
     def _save_results(self):

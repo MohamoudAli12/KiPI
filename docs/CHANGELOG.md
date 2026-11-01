@@ -7,6 +7,18 @@ milestones rather than versions that were ever set.
 ## 0.9.3 (in development)
 
 ### Added
+- **User guide: reading SI results.** A new section explains every Signal Integrity
+  result in plain terms (the basics, TDR, S-parameters, crosstalk, pulse response, the eye,
+  BER and bathtubs, equalisation, COM, skew and waveforms) with KiPI's own plots of a good
+  and a bad channel from `examples/si_demo` side by side, each check's PASS, WARN and FAIL
+  limits, the usual fixes, and a one-table cheat sheet.
+- **SI plots: a voltage bathtub and the solved channels compared.**
+  - Beside the eye, the voltage bathtub gives the BER against the decision threshold at
+    the eye's best sampling time; the gap between its walls at the target BER is the eye
+    height (as the timing bathtub's is its width).
+  - **Solved channels compared** puts every solved channel side by side: eye height and
+    width, insertion loss at Nyquist and P/N skew, each bar coloured by its check with its
+    limit as a tick. A multi-channel report adds the same chart to its summary.
 - **SI Nets list: sections, a taller list, and pairs set by hand.**
   - The SI Nets list folds into **Differential pairs**, **Single-ended** and **Ground
     and power**, each header with how many of its nets are ticked; a click on a header
@@ -53,9 +65,6 @@ milestones rather than versions that were ever set.
     ramp, package R/L/C, corners). It is checked against the interface's limits: Custom,
     LVDS, USB 2.0/3.2, USB4 Gen 2/3, PCIe 2–5, SATA III, HDMI 2.0, SGMII, 10GBASE-KR,
     MIPI D-PHY, DDR4 DQ or CMOS.
-  - **3D check with openEMS**: when openEMS is installed, a via's region is simulated in
-    3D and plotted beside KiPI's own model of it. The model's planes and dielectrics
-    run on into its absorbing walls, as the board's do past the region.
   - **A fast Quick Scan on large boards.** Each cut keeps only the copper that affects its
     trace: between its nearest planes and within five dielectric heights. Cuts that come
     out alike are solved once, with a screening mesh, in parallel on the CPU's cores. A
@@ -175,6 +184,13 @@ milestones rather than versions that were ever set.
   vias, zone copper, outline and DC solve match the board file's.
 
 ### Changed
+- **SI Channels: Add makes channels from the nets ticked in Board.** It used to add the
+  first signal net without a channel, which looked random. It now makes a channel for
+  each signal net ticked in Board's Nets list, a pair's two legs as one channel (positive
+  leg first), and skips nets that already have one.
+- **The openEMS 3D check is removed.** The Results tab's 3D check, its settings and the
+  `kipi.si.openems` and `kipi.si.verify` modules are gone; channel solves use KiPI's own
+  models only. Older setup files with the 3D check's settings still open.
 - **The launcher's setup window is dark, and sized for the display.** It follows KiPI's
   Dark mode choice (dark unless you picked light), and on a high-resolution display it is
   enlarged by the desktop's scale (`Xft.dpi`, `QT_FONT_DPI`, `QT_SCALE_FACTOR`,

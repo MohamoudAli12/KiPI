@@ -110,6 +110,18 @@ def pair_map(nets: Iterable[str], manual: Optional[Manual] = None) -> Dict[str, 
     return out
 
 
+def positive_first(a: str, b: str, manual: Optional[Manual] = None) -> Tuple[str, str]:
+    """The pair ``a``, ``b`` as (positive, negative): as the user set it, else by the
+    names' polarity markers, else by name."""
+    for p, n in (manual or ((), ()))[0]:
+        if {p, n} == {a, b}:
+            return p, n
+    x = _partner(a)
+    if x is not None and x[0] == b:
+        return (a, b) if x[1] else (b, a)
+    return (a, b) if a < b else (b, a)
+
+
 def manual_of(si) -> Manual:
     """The user's pairs and single-ended nets from the SI settings (none on an older
     setup)."""

@@ -121,25 +121,6 @@ class Channel:
 
 
 # ------------------------------------------------------------------- routes
-def clip_to_box(p, q, box):
-    """The part of segment p–q inside ``box`` (x0, y0, x1, y1), or None (Liang–Barsky)."""
-    x0, y0, x1, y1 = box
-    dx, dy = q[0] - p[0], q[1] - p[1]
-    t0, t1 = 0.0, 1.0
-    for d, lo, hi, a in ((dx, x0, x1, p[0]), (dy, y0, y1, p[1])):
-        if abs(d) < 1e-12:
-            if a < lo or a > hi:
-                return None
-            continue
-        ta, tb = (lo - a) / d, (hi - a) / d
-        if ta > tb:
-            ta, tb = tb, ta
-        t0, t1 = max(t0, ta), min(t1, tb)
-        if t0 >= t1:
-            return None
-    return (p[0] + dx * t0, p[1] + dy * t0), (p[0] + dx * t1, p[1] + dy * t1)
-
-
 # Chords to a full turn of an arc in a channel: 30° each. Each chord is a section with its
 # own field solve, and a bend's few tenths of a mm need no more at any frequency swept; the
 # chords are 1.1 % shorter than the arc.
@@ -151,10 +132,8 @@ SI_ARC_SEGMENTS_PER_CIRCLE = 12
 TAIL_MIN_SHARE = 0.05
 
 
-def net_segments(snap: BoardSnapshot, net: str, segment_mm: float,
-                 region: Optional[Tuple[float, float, float, float]] = None) -> List[Seg]:
-    """``net``'s tracks cut into segments at most ``segment_mm`` long; with ``region``,
-    only their parts inside it."""
+def net_segments(snap: BoardSnapshot, net: str, segment_mm: float) -> List[Seg]:
+    """``net``'s tracks cut into segments at most ``segment_mm`` long."""
     from kipi.core.geometry.arcs import arc_points
     tracks, _, _, _ = snap.items_on_net(net)
     out = []
@@ -163,11 +142,6 @@ def net_segments(snap: BoardSnapshot, net: str, segment_mm: float,
                                       segments_per_circle=SI_ARC_SEGMENTS_PER_CIRCLE)
                            if t.is_arc else [t.end])
         for p, q in zip(pts, pts[1:]):
-            if region is not None:
-                inside = clip_to_box(p, q, region)
-                if inside is None:
-                    continue
-                p, q = inside
             length = math.hypot(q[0] - p[0], q[1] - p[1])
             if length < 1e-6:
                 continue
@@ -564,10 +538,6 @@ class BuildOptions:
     roughness: Roughness = field(default_factory=Roughness)
     via_models: bool = True
     stitch_radius_mm: float = STITCH_RADIUS_MM
-    region: Optional[Tuple[float, float, float, float]] = None   # only the copper in it
-    # The plane pairs' edges: "board" (open edges at the board's outline: its cavity
-    # resonances) or "open" (planes going on for ever, as in a 3D model's region).
-    planes: str = "board"
     # Parts not fitted (an assembly variant's): their pads stay copper, but nothing joins
     # them.
     not_fitted: Tuple[str, ...] = ()
@@ -599,7 +569,7 @@ def build_channel(board: SIBoard, groups: Sequence[Sequence[str]], opts: BuildOp
         return probe.key(net, layer, p)[0] == "pt"
     work: List[List[Seg]] = []                  # each section's segments, reference first
     for g in groups:
-        segs = {n: net_segments(snap, n, opts.segment_mm, opts.region) for n in g}
+        segs = {n: net_segments(snap, n, opts.segment_mm) for n in g}
         ref, others = g[0], {n: segs[n] for n in g[1:]}
         paired, rest = _pair_up(segs[ref], others, opts.window_mm, board, opts.segment_mm,
                                 plain) if others else ([(s, {}) for s in segs[ref]], {})
@@ -622,8 +592,7 @@ def build_channel(board: SIBoard, groups: Sequence[Sequence[str]], opts: BuildOp
             _add_section(ch, board, nodes, c, opts, pairs)
     _add_vias(ch, board, [next(v for v in nodes.vias if v.id == vid) for vid in nodes.used_vias],
               opts)
-    for ref, kind, value, pair in (series_parts(snap, nets, opts.not_fitted) if opts.region is None
-                                     else []):
+    for ref, kind, value, pair in series_parts(snap, nets, opts.not_fitted):
         a, b = pair.split("|")
         pads = [p for p in snap.pads if p.footprint == ref and p.net]
         pa = next(p for p in pads if p.net == a)
@@ -830,13 +799,13 @@ def via_stack(board: SIBoard, via: Via, stitch_radius_mm: float = STITCH_RADIUS_
     return vs
 
 
-def pair_impedance(board: SIBoard, pair: PlanePair, posts: Sequence[tuple], planes: str = "board"):
+def pair_impedance(board: SIBoard, pair: PlanePair, posts: Sequence[tuple]):
     """z(f) (F, N, N) of the signal vias ``posts`` ((x, y, r), board mm) crossing ``pair``,
     its stitching vias shorted and each barrel's own resistance added; the last result is
     kept for the next call at the same frequencies."""
     x0, y0, x1, y1 = board.outline_box
-    size = None if planes == "open" else (max(x1 - x0, 1.0), max(y1 - y0, 1.0))
-    origin = (0.0, 0.0) if size is None else (x0, y0)
+    size = (max(x1 - x0, 1.0), max(y1 - y0, 1.0))
+    origin = (x0, y0)
     own = {(round(x, 4), round(y, 4)) for x, y, _ in posts}
     centre = np.mean([(x, y) for x, y, _ in posts], axis=0)
     shorts = sorted({s for s in pair.stitches if (round(s[0], 4), round(s[1], 4)) not in own},
@@ -898,7 +867,7 @@ def _add_vias(ch: Channel, board: SIBoard, vias: Sequence[Via], opts: BuildOptio
         pair = PlanePair(pair.layer_ids, pair.nets, pair.h_mm, pair.material, sorted(stitches),
                          decaps)
         posts = [(*m[0].position, m[0].drill_mm / 2) for m in members]
-        z = pair_impedance(board, pair, posts, opts.planes)
+        z = pair_impedance(board, pair, posts)
         _, vs0, _, pa0, pb0 = members[0]
         for k, (_, share) in enumerate(segment_shares(vs0, pa0, pb0)):
             tops = [m[2][m[3] + k] for m in members]

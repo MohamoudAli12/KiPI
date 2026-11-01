@@ -111,12 +111,6 @@ class SISettings:
     stitch_radius_mm: float = 2.0
     scan_nets: str = "all"               # "all" signals, or "scope": the nets ticked
     scan_slow: bool = False              # "all" also takes the slow control nets
-    # 3D (openEMS)
-    em_f_max_hz: float = 20e9
-    em_fine_mm: float = 0.05
-    em_margin_mm: float = 2.0
-    em_end_db: float = -40.0
-    em_threads: int = 0
     report_format: str = "html"
     # Nets the user set, over their names: [positive, negative] pairs, single-ended nets.
     manual_pairs: List[List[str]] = field(default_factory=list)

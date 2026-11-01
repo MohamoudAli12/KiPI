@@ -502,10 +502,5 @@ si:
   stitch_radius_mm: 2.0
   scan_nets: all
   scan_slow: false
-  em_f_max_hz: 20000000000.0
-  em_fine_mm: 0.05
-  em_margin_mm: 2.0
-  em_end_db: -40.0
-  em_threads: 0
   report_format: html
 format_version: 2
